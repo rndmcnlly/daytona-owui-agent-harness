@@ -703,7 +703,35 @@ async def run_tests():
     print("\n── cleanup ──")
     await tools.bash("rm -rf workspace/test_file.txt workspace/dup_test.txt workspace/deep workspace/test_project workspace/attach_test.py workspace/attach_test.txt workspace/test_image.png workspace/test_image.svg workspace/test_archive.zip workspace/test_binary.dat /tmp/_bash_output_*.log", __user__=user, __event_emitter__=mock_emitter)
 
-    # Stop the sandbox to conserve resources
+    # ── Test 17: destroy ─────────────────────────────────────────
+    # Run this last — it deletes the sandbox, so nothing can run after it.
+
+    print("\n── destroy: wipes sandbox ──")
+    result = await tools.destroy(__user__=user, __event_emitter__=mock_emitter)
+    check("destroy reports success", "Destroyed" in result and "1 sandbox" in result, result[:200])
+
+    # Verify sandbox is actually gone
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"{tools.valves.daytona_api_url}/sandbox",
+            params={"labels": _json.dumps({"test-harness": TEST_EMAIL})},
+            headers=_headers(tools.valves),
+        )
+        remaining = [
+            s for s in (resp.json() or [])
+            if s.get("labels", {}).get("test-harness") == TEST_EMAIL
+        ]
+        check("sandbox gone after destroy", len(remaining) == 0, f"got {len(remaining)}")
+
+    print("\n── destroy: no sandbox to destroy ──")
+    result = await tools.destroy(__user__=user, __event_emitter__=mock_emitter)
+    check("destroy with nothing reports no sandbox", "No sandbox found" in result, result[:200])
+
+    print("\n── destroy: next tool call creates fresh sandbox ──")
+    result = await tools.bash("echo reborn", __user__=user, __event_emitter__=mock_emitter)
+    check("fresh sandbox works", "reborn" in result, result[:200])
+
+    # Stop the fresh sandbox to conserve resources
     async with httpx.AsyncClient(timeout=30.0) as client:
         sandboxes_resp = await client.get(
             f"{tools.valves.daytona_api_url}/sandbox",

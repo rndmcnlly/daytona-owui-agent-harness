@@ -585,6 +585,85 @@ class Tools:
     def __init__(self):
         self.valves = self.Valves()
 
+    async def destroy(
+        self,
+        __user__: dict = {},
+        __event_emitter__=None,
+    ) -> str:
+        """
+        Permanently destroy your sandbox. ALL files and state are lost forever.
+        A fresh sandbox will be created automatically on your next tool call.
+        Only use this if your sandbox is in an unrecoverable state.
+        """
+        try:
+            email = _get_email(__user__)
+            valves = self.valves
+
+            if not valves.daytona_api_key:
+                return "Error: Daytona API key not configured."
+            if not valves.deployment_label:
+                return "Error: Deployment label not configured."
+
+            label_key = valves.deployment_label
+            labels_filter = json.dumps({label_key: email})
+
+            await _emit(__event_emitter__, "Looking up sandbox...")
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(
+                    _api(valves, "/sandbox"),
+                    params={"labels": labels_filter},
+                    headers=_headers(valves),
+                )
+                resp.raise_for_status()
+                sandboxes = resp.json() or []
+                matches = [
+                    s for s in sandboxes
+                    if s.get("labels", {}).get(label_key) == email
+                ]
+
+                if not matches:
+                    await _emit(__event_emitter__, "No sandbox found", done=True)
+                    return "No sandbox found. One will be created on your next tool call."
+
+                deleted = []
+                for s in matches:
+                    sid = s["id"]
+                    await _emit(__event_emitter__, f"Destroying sandbox {sid[:12]}...")
+                    resp = await client.delete(
+                        _api(valves, f"/sandbox/{sid}"),
+                        headers=_headers(valves),
+                        params={"force": "true"},
+                    )
+                    resp.raise_for_status()
+                    deleted.append(sid)
+
+                # Poll until deletion propagates
+                for _ in range(30):
+                    await asyncio.sleep(1)
+                    resp = await client.get(
+                        _api(valves, "/sandbox"),
+                        params={"labels": labels_filter},
+                        headers=_headers(valves),
+                    )
+                    remaining = [
+                        s for s in (resp.json() or [])
+                        if s.get("labels", {}).get(label_key) == email
+                    ]
+                    if not remaining:
+                        break
+
+                await _emit(__event_emitter__, "Sandbox destroyed", done=True)
+                ids = ", ".join(d[:12] for d in deleted)
+                return (
+                    f"Destroyed {len(deleted)} sandbox(es) ({ids}). "
+                    f"A fresh sandbox will be created on the next tool call."
+                )
+
+        except Exception as exc:
+            await _emit(__event_emitter__, "Destroy failed", done=True)
+            return f"Error: {exc}"
+
     async def onboard(
         self,
         path: str,

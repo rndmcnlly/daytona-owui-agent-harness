@@ -1,6 +1,6 @@
 # Lathe
 
-An Open WebUI toolkit that gives any OWUI-compatible model a coding agent's tool surface — `bash`, `read`, `write`, `edit`, `attach`, `ingest`, `onboard` — executing against per-user sandbox VMs with transparent lifecycle management.
+An Open WebUI toolkit that gives any OWUI-compatible model a coding agent's tool surface — `bash`, `read`, `write`, `edit`, `attach`, `ingest`, `onboard`, `destroy` — executing against per-user sandbox VMs with transparent lifecycle management.
 
 ## Design
 
@@ -46,6 +46,7 @@ After the control plane reports `state=started`, a readiness probe (`echo ready`
 | `edit(path, old_string, new_string, replace_all)` | Exact string replacement | Download, string replace, re-upload. Rejects ambiguous matches unless `replace_all=True`. |
 | `attach(path)` | Show file to user without consuming model context | Classifies file as text/image/binary, renders appropriate viewer as inline iframe. See [Rich attachments](#rich-attachments) below. |
 | `ingest(prompt)` | Get a file from the user into the sandbox | Pops a file picker modal via `__event_call__`, user selects a local file, bytes go directly to sandbox. See [Ingest](#ingest) below. |
+| `destroy()` | Permanently delete the sandbox | Force-deletes all sandboxes matching the user's label. A fresh sandbox is created automatically on the next tool call. |
 
 ### Key implementation details
 
