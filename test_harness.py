@@ -671,8 +671,20 @@ async def test_int_ensure_sandbox(R: Results, tools: Tools, user: dict):
 
 async def test_int_destroy(R: Results, tools: Tools, user: dict):
 
-    print("\n── destroy: wipes sandbox ──")
+    print("\n── destroy: safety guard (confirm=false) ──")
     result = await tools.destroy(__user__=user, __event_emitter__=mock_emitter)
+    R.check("default confirm=false aborts", "aborted" in result.lower(), result[:200])
+    R.check("abort message mentions confirm", "confirm" in result.lower(), result[:200])
+
+    result = await tools.destroy(confirm=False, __user__=user, __event_emitter__=mock_emitter)
+    R.check("explicit confirm=false aborts", "aborted" in result.lower(), result[:200])
+
+    # Verify sandbox still exists after abort
+    result = await tools.bash("echo still_alive", __user__=user, __event_emitter__=mock_emitter)
+    R.check("sandbox survives abort", "still_alive" in result, result[:200])
+
+    print("\n── destroy: wipes sandbox (confirm=true) ──")
+    result = await tools.destroy(confirm=True, __user__=user, __event_emitter__=mock_emitter)
     R.check("destroy reports success", "Destroyed" in result and "1 sandbox" in result, result[:200])
 
     import httpx, json as _json
@@ -690,7 +702,7 @@ async def test_int_destroy(R: Results, tools: Tools, user: dict):
         R.check("sandbox gone after destroy", len(remaining) == 0, f"got {len(remaining)}")
 
     print("\n── destroy: no sandbox to destroy ──")
-    result = await tools.destroy(__user__=user, __event_emitter__=mock_emitter)
+    result = await tools.destroy(confirm=True, __user__=user, __event_emitter__=mock_emitter)
     R.check("destroy with nothing reports no sandbox", "No sandbox found" in result, result[:200])
 
     print("\n── destroy: next tool call creates fresh sandbox ──")
@@ -698,7 +710,7 @@ async def test_int_destroy(R: Results, tools: Tools, user: dict):
     R.check("fresh sandbox works", "reborn" in result, result[:200])
 
     print("\n── final cleanup: destroy reborn sandbox ──")
-    result = await tools.destroy(__user__=user, __event_emitter__=mock_emitter)
+    result = await tools.destroy(confirm=True, __user__=user, __event_emitter__=mock_emitter)
     R.check("final destroy succeeds", "Destroyed" in result, result[:200])
 
 

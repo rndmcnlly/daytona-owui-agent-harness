@@ -46,7 +46,7 @@ After the control plane reports `state=started`, a readiness probe (`echo ready`
 | `edit(path, old_string, new_string, replace_all)` | Exact string replacement | Download, string replace, re-upload. Rejects ambiguous matches unless `replace_all=True`. |
 | `attach(path)` | Show file to user without consuming model context | Classifies file as text/image/binary, renders appropriate viewer as inline iframe. See [Rich attachments](#rich-attachments) below. |
 | `ingest(prompt)` | Get a file from the user into the sandbox | Pops a file picker modal via `__event_call__`, user selects a local file, bytes go directly to sandbox. See [Ingest](#ingest) below. |
-| `destroy()` | Permanently delete the sandbox | Force-deletes all sandboxes matching the user's label. A fresh sandbox is created automatically on the next tool call. |
+| `destroy(confirm)` | Permanently delete the sandbox | Requires `confirm=true` as a safety guard. Force-deletes all sandboxes matching the user's label. A fresh sandbox is created automatically on the next tool call. |
 
 ### Key implementation details
 
@@ -55,6 +55,7 @@ After the control plane reports `state=started`, a readiness probe (`echo ready`
 - **Error handling**: Scripts run with `set -e -o pipefail` so failures abort immediately and pipe errors propagate. Models can override with `|| true` when intentional.
 - **Non-interactive environment**: Every bash command runs with `DEBIAN_FRONTEND=noninteractive GIT_TERMINAL_PROMPT=0 PIP_NO_INPUT=1 NPM_CONFIG_YES=true CI=true` exported to prevent blocking on interactive prompts.
 - **Helper visibility**: OWUI exposes all non-`__dunder__` methods on `class Tools` as callable tools. All helpers are module-level functions to stay invisible to tool discovery.
+- **Destroy safety guard**: The `destroy` tool requires an explicit `confirm=true` parameter. This serves two purposes: (1) it prevents the model from accidentally invoking a destructive, irrevocable operation with zero friction, and (2) it works around an [OWUI streaming argument parser bug](https://github.com/open-webui/open-webui/blob/main/backend/open_webui/utils/middleware.py) where tools with zero user-facing parameters fail. OWUI's streaming handler initializes tool call arguments to `""` (empty string) and when no argument deltas arrive (because the tool has no parameters), both `ast.literal_eval("")` and `json.loads("")` fail, producing `"Tool call arguments could not be parsed"`. Adding a required parameter ensures the model always sends argument deltas.
 - **Onboard script**: The `onboard` tool uploads a shell script to `/tmp/_onboard_{hash}.sh` and executes it, using the same unique-tempfile pattern as `bash`. The script parses YAML frontmatter line-by-line in bash.
 - **Browser-side execution**: The `ingest` tool uses OWUI's `__event_call__` mechanism to inject and run JavaScript in the user's browser tab. This is the same pattern used by the [picker-agent](https://github.com/rndmcnlly/picker-agent) toolkits. The JS renders a modal, the user interacts with it, and structured data flows back to Python.
 

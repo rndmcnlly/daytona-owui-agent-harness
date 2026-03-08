@@ -627,6 +627,7 @@ class Tools:
 
     async def destroy(
         self,
+        confirm: bool = False,
         __user__: dict = {},
         __event_emitter__=None,
     ) -> str:
@@ -634,7 +635,14 @@ class Tools:
         Permanently destroy your sandbox. ALL files and state are lost forever.
         A fresh sandbox will be created automatically on your next tool call.
         Only use this if your sandbox is in an unrecoverable state.
+        You must set confirm=true to proceed. Without it, no action is taken.
+        :param confirm: Must be set to true to confirm destruction. Defaults to false as a safety measure.
         """
+        if not confirm:
+            return (
+                "Destroy aborted: confirm was not set to true. "
+                "Set confirm=true to permanently destroy the sandbox and all its contents."
+            )
         try:
             email = _get_email(__user__)
             valves = self.valves
