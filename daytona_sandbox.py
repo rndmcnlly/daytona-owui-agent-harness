@@ -84,6 +84,253 @@ def _highlight_code(code: str, path: str) -> str:
         return html_mod.escape(code)
 
 
+# ── file classification for attach ───────────────────────────────────
+
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico", ".avif"}
+_BINARY_EXTS = {
+    ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
+    ".pdf", ".whl", ".egg",
+    ".exe", ".dll", ".so", ".dylib", ".a",
+    ".pyc", ".pyo", ".class",
+    ".sqlite", ".db",
+    ".wasm",
+    ".o", ".obj",
+    ".ttf", ".otf", ".woff", ".woff2",
+    ".mp3", ".mp4", ".wav", ".ogg", ".flac", ".avi", ".mkv", ".mov", ".webm",
+}
+_IMAGE_MIME = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".svg": "image/svg+xml", ".webp": "image/webp",
+    ".bmp": "image/bmp", ".ico": "image/x-icon", ".avif": "image/avif",
+}
+# Max bytes to embed in HTML for binary download (10 MB)
+_EMBED_SIZE_CAP = 10 * 1024 * 1024
+
+
+def _classify_file(path: str, raw: bytes) -> str:
+    """Classify a file as 'image', 'binary', or 'text' based on extension and content."""
+    ext = ("." + path.rsplit(".", 1)[-1]).lower() if "." in path.rsplit("/", 1)[-1] else ""
+    if ext in _IMAGE_EXTS:
+        return "image"
+    if ext in _BINARY_EXTS:
+        return "binary"
+    # Heuristic: try UTF-8 decode; if it fails, it's binary
+    try:
+        raw.decode("utf-8")
+        return "text"
+    except (UnicodeDecodeError, ValueError):
+        return "binary"
+
+
+def _render_image_html(raw: bytes, filename: str, path: str) -> str:
+    """Render an image file as an inline <img> with Save button."""
+    ext = ("." + path.rsplit(".", 1)[-1]).lower() if "." in path.rsplit("/", 1)[-1] else ""
+    mime = _IMAGE_MIME.get(ext, "application/octet-stream")
+    n_bytes = len(raw)
+    raw_b64 = base64.b64encode(raw).decode("ascii")
+
+    # SVGs can also be rendered directly, but data URI works fine
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+    font-size: 13px;
+    background: #1e1e2e;
+    color: #cdd6f4;
+  }}
+  .header {{
+    background: #313244;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: #a6adc8;
+    border-bottom: 1px solid #45475a;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }}
+  .header .filename {{ color: #89b4fa; font-weight: 600; }}
+  .header .meta {{ color: #585b70; margin-left: auto; }}
+  .header .actions {{ display: flex; gap: 4px; }}
+  .header button {{
+    background: transparent;
+    border: 1px solid #45475a;
+    color: #a6adc8;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: inherit;
+  }}
+  .header button:hover {{ background: #45475a; color: #cdd6f4; }}
+  .img-wrap {{
+    padding: 16px;
+    display: flex;
+    justify-content: center;
+    background: #181825;
+  }}
+  .img-wrap img {{
+    max-width: 100%;
+    height: auto;
+    border-radius: 4px;
+  }}
+</style>
+</head>
+<body>
+  <div class="header">
+    <span class="filename">{html_mod.escape(filename)}</span>
+    <span class="meta">{n_bytes:,} bytes</span>
+    <span class="actions">
+      <button onclick="saveFile()">Save</button>
+    </span>
+  </div>
+  <div class="img-wrap">
+    <img src="data:{mime};base64,{raw_b64}" alt="{html_mod.escape(filename)}">
+  </div>
+  <script>
+    var _b64 = "{raw_b64}";
+    var _mime = "{mime}";
+    var _fname = "{html_mod.escape(filename)}";
+    function saveFile() {{
+      var bin = atob(_b64);
+      var arr = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      var blob = new Blob([arr], {{type: _mime}});
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = _fname;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }}
+    function reportHeight() {{
+      parent.postMessage({{ type: 'iframe:height', height: document.documentElement.scrollHeight }}, '*');
+    }}
+    window.addEventListener('load', reportHeight);
+    new ResizeObserver(reportHeight).observe(document.body);
+  </script>
+</body>
+</html>"""
+
+
+def _render_binary_html(raw: bytes, filename: str, path: str) -> str:
+    """Render a binary file as a download card. Embeds content for Save if under size cap."""
+    ext = ("." + path.rsplit(".", 1)[-1]).lower() if "." in path.rsplit("/", 1)[-1] else ""
+    n_bytes = len(raw)
+    can_embed = n_bytes <= _EMBED_SIZE_CAP
+
+    def _human_size(n: int) -> str:
+        b = float(n)
+        for unit in ("B", "KB", "MB", "GB"):
+            if b < 1024:
+                return f"{b:,.0f} {unit}" if unit == "B" else f"{b:,.1f} {unit}"
+            b /= 1024
+        return f"{b:,.1f} TB"
+
+    save_button = ""
+    save_script = ""
+    if can_embed:
+        raw_b64 = base64.b64encode(raw).decode("ascii")
+        save_button = '<button onclick="saveFile()">Save</button>'
+        save_script = f"""
+    var _b64 = "{raw_b64}";
+    var _fname = "{html_mod.escape(filename)}";
+    function saveFile() {{
+      var bin = atob(_b64);
+      var arr = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      var blob = new Blob([arr], {{type: 'application/octet-stream'}});
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = _fname;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }}"""
+    else:
+        save_button = '<span class="too-large">Too large to download from viewer</span>'
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+    font-size: 13px;
+    background: #1e1e2e;
+    color: #cdd6f4;
+  }}
+  .card {{
+    background: #313244;
+    margin: 16px;
+    border-radius: 8px;
+    border: 1px solid #45475a;
+    overflow: hidden;
+  }}
+  .card-body {{
+    padding: 20px 16px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }}
+  .icon {{
+    font-size: 32px;
+    flex-shrink: 0;
+    width: 48px;
+    height: 48px;
+    background: #45475a;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }}
+  .info {{ flex: 1; }}
+  .info .filename {{ color: #89b4fa; font-weight: 600; font-size: 14px; }}
+  .info .meta {{ color: #585b70; font-size: 12px; margin-top: 4px; }}
+  .actions {{ display: flex; gap: 8px; align-items: center; }}
+  .actions button {{
+    background: #89b4fa;
+    border: none;
+    color: #1e1e2e;
+    border-radius: 6px;
+    padding: 6px 16px;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+    font-weight: 600;
+  }}
+  .actions button:hover {{ background: #b4d0fb; }}
+  .too-large {{ color: #585b70; font-size: 11px; font-style: italic; }}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="card-body">
+      <div class="icon">&#128230;</div>
+      <div class="info">
+        <div class="filename">{html_mod.escape(filename)}</div>
+        <div class="meta">{_human_size(n_bytes)} &middot; {ext.lstrip('.').upper() or 'BIN'} file</div>
+      </div>
+      <div class="actions">
+        {save_button}
+      </div>
+    </div>
+  </div>
+  <script>
+    {save_script}
+    function reportHeight() {{
+      parent.postMessage({{ type: 'iframe:height', height: document.documentElement.scrollHeight }}, '*');
+    }}
+    window.addEventListener('load', reportHeight);
+    new ResizeObserver(reportHeight).observe(document.body);
+  </script>
+</body>
+</html>"""
+
+
 async def _wait_for_toolbox(valves, sandbox_id: str, emitter=None):
     """Poll the toolbox API until it responds, then ensure workspace dir exists."""
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -673,6 +920,8 @@ class Tools:
         Attach a file from the sandbox for the user to view inline.
         The file content is rendered visually for the human but is NOT returned
         to the model. Use read() if you need to see file contents yourself.
+        Works with text files (syntax-highlighted), images (rendered inline),
+        and binary files (download card with Save button for files under 10 MB).
         :param path: Absolute path or relative to /home/daytona (e.g. workspace/main.py).
         """
         try:
@@ -693,20 +942,24 @@ class Tools:
                     return f"Error: File not found: {path}"
 
                 resp.raise_for_status()
-                content = resp.text
+                raw = resp.content  # bytes, not text — safe for binary
 
-            n_bytes = len(content.encode("utf-8"))
-            n_lines = content.count("\n") + (0 if content.endswith("\n") else 1)
-
+            n_bytes = len(raw)
             filename = path.rsplit("/", 1)[-1] if "/" in path else path
+            file_type = _classify_file(path, raw)
 
-            # Server-side syntax highlighting with Pygments
-            highlighted = _highlight_code(content, path)
+            if file_type == "image":
+                html_content = _render_image_html(raw, filename, path)
+            elif file_type == "binary":
+                html_content = _render_binary_html(raw, filename, path)
+            else:
+                # Text path: decode, highlight, render code viewer
+                content = raw.decode("utf-8")
+                n_lines = content.count("\n") + (0 if content.endswith("\n") else 1)
+                highlighted = _highlight_code(content, path)
+                raw_b64 = base64.b64encode(raw).decode("ascii")
 
-            # Base64-encode raw content for copy/download without JS escaping issues
-            raw_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
-
-            html_content = f"""<!DOCTYPE html>
+                html_content = f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">

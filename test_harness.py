@@ -343,7 +343,161 @@ async def run_tests():
     check("includes SKILL.md path", "SKILL.md" in result, result[:500])
     check("does NOT include skill body", "Detailed instructions here" not in result, result[:500])
 
-    # ── Test 8: _highlight_code helper ──────────────────────────
+    # ── Test 8: attach image file ──────────────────────────────
+    print("\n── attach: PNG image ──")
+    # Create a minimal valid 1x1 red PNG (67 bytes)
+    import struct, zlib as _zlib
+    def _make_tiny_png():
+        def _chunk(ctype, data):
+            c = ctype + data
+            return struct.pack(">I", len(data)) + c + struct.pack(">I", _zlib.crc32(c) & 0xFFFFFFFF)
+        sig = b"\x89PNG\r\n\x1a\n"
+        ihdr = _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+        raw_row = b"\x00\xff\x00\x00"  # filter byte + RGB
+        idat = _chunk(b"IDAT", _zlib.compress(raw_row))
+        iend = _chunk(b"IEND", b"")
+        return sig + ihdr + idat + iend
+
+    png_bytes = _make_tiny_png()
+    # Write via bash since write() is text-oriented
+    import base64 as _b64
+    png_b64 = _b64.b64encode(png_bytes).decode()
+    await tools.bash(
+        f"echo '{png_b64}' | base64 -d > /home/daytona/workspace/test_image.png",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    result = await tools.attach(
+        "workspace/test_image.png",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    check("image returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
+    img_body = result.body.decode("utf-8")
+    check("image has <img> tag", "<img " in img_body, "")
+    check("image has data URI", "data:image/png;base64," in img_body, "")
+    check("image has filename", "test_image.png" in img_body, "")
+    check("image has Save button", "Save" in img_body and "saveFile" in img_body, "")
+    check("image does NOT have Copy button", "copyFile" not in img_body, "image shouldn't have Copy")
+    check("image does NOT have line numbers", "gutter" not in img_body, "image shouldn't have line gutter")
+    check("image has height reporting", "iframe:height" in img_body, "")
+
+    print("\n── attach: SVG image ──")
+    svg_content = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect fill="red" width="10" height="10"/></svg>'
+    await tools.write(
+        "workspace/test_image.svg", svg_content,
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    result = await tools.attach(
+        "workspace/test_image.svg",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    check("SVG returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
+    svg_body = result.body.decode("utf-8")
+    check("SVG renders as image not code", "<img " in svg_body, "SVG should render as <img>")
+    check("SVG has correct MIME", "image/svg+xml" in svg_body, "")
+
+    # ── Test 9: attach binary file ───────────────────────────────
+    print("\n── attach: ZIP binary file ──")
+    # Create a minimal zip file in the sandbox
+    await tools.bash(
+        "cd /home/daytona/workspace && echo 'hello from zip' > _zipme.txt && zip test_archive.zip _zipme.txt && rm _zipme.txt",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    result = await tools.attach(
+        "workspace/test_archive.zip",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    check("zip returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
+    zip_body = result.body.decode("utf-8")
+    check("zip shows filename", "test_archive.zip" in zip_body, "")
+    check("zip shows file type", "ZIP" in zip_body, "")
+    check("zip has download card (no code viewer)", "gutter" not in zip_body, "binary shouldn't have line gutter")
+    check("zip has Save button (under 10MB)", "saveFile" in zip_body, "small zip should be downloadable")
+    check("zip does NOT have Copy button", "copyFile" not in zip_body, "binary shouldn't have Copy")
+    check("zip has height reporting", "iframe:height" in zip_body, "")
+
+    print("\n── attach: binary by content (not extension) ──")
+    # Write raw bytes that aren't valid UTF-8, with an ambiguous extension
+    await tools.bash(
+        r"printf '\x80\x81\x82\xff\xfe\xfd' > /home/daytona/workspace/test_binary.dat",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    result = await tools.attach(
+        "workspace/test_binary.dat",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    check("non-UTF8 dat returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
+    dat_body = result.body.decode("utf-8")
+    check("non-UTF8 renders as binary card", "gutter" not in dat_body and "<img" not in dat_body, "should be download card")
+    check("non-UTF8 has Save button", "saveFile" in dat_body, "small binary should be downloadable")
+
+    # ── Test 10: _classify_file unit tests ───────────────────────
+    from daytona_sandbox import _classify_file
+
+    print("\n── _classify_file: image extensions ──")
+    for ext in ["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico", "avif"]:
+        check(f".{ext} classified as image", _classify_file(f"file.{ext}", b"") == "image", f"got {_classify_file(f'file.{ext}', b'')}")
+
+    print("\n── _classify_file: binary extensions ──")
+    for ext in ["zip", "tar", "gz", "pdf", "exe", "whl", "sqlite", "mp3", "mp4", "woff2"]:
+        check(f".{ext} classified as binary", _classify_file(f"file.{ext}", b"") == "binary", f"got {_classify_file(f'file.{ext}', b'')}")
+
+    print("\n── _classify_file: text by content ──")
+    check("valid UTF-8 is text", _classify_file("file.unknown", b"hello world") == "text", "")
+    check("empty file is text", _classify_file("noext", b"") == "text", "")
+    check("UTF-8 with BOM is text", _classify_file("f.cfg", b"\xef\xbb\xbfhello") == "text", "")
+
+    print("\n── _classify_file: binary by content ──")
+    check("invalid UTF-8 is binary", _classify_file("file.dat", b"\x80\x81\x82") == "binary", "")
+    # Note: null bytes are valid UTF-8 (U+0000), so b"hello\x00world" classifies as text.
+    # .bin is not in _BINARY_EXTS, so classification falls through to decode heuristic.
+    check("null bytes are valid UTF-8 (text)", _classify_file("file.bin", b"hello\x00world") == "text", "")
+    # But .bin-like extensions that ARE in the binary list get caught by extension
+    check(".exe classified by extension", _classify_file("file.exe", b"hello\x00world") == "binary", "")
+
+    # ── Test 11: _render_image_html unit tests ───────────────────
+    from daytona_sandbox import _render_image_html, _render_binary_html
+
+    print("\n── _render_image_html: structure ──")
+    img_html = _render_image_html(b"\x89PNG fake", "photo.png", "dir/photo.png")
+    check("image html has doctype", "<!DOCTYPE html>" in img_html, "")
+    check("image html has img tag", "<img " in img_html, "")
+    check("image html has correct mime", "image/png" in img_html, "")
+    check("image html has filename", "photo.png" in img_html, "")
+    check("image html has byte count", "9" in img_html, "should show 9 bytes")  # len(b"\x89PNG fake")
+    check("image html has save function", "saveFile" in img_html, "")
+    check("image html has resize observer", "ResizeObserver" in img_html, "")
+
+    # ── Test 12: _render_binary_html unit tests ──────────────────
+    print("\n── _render_binary_html: small file ──")
+    bin_html = _render_binary_html(b"\x00" * 100, "data.zip", "path/data.zip")
+    check("binary html has doctype", "<!DOCTYPE html>" in bin_html, "")
+    check("binary html has filename", "data.zip" in bin_html, "")
+    check("binary html shows ZIP type", "ZIP" in bin_html, "")
+    check("binary html has save for small file", "saveFile" in bin_html, "")
+    check("binary html has resize observer", "ResizeObserver" in bin_html, "")
+
+    print("\n── _render_binary_html: large file (over 10MB) ──")
+    from daytona_sandbox import _EMBED_SIZE_CAP
+    # Don't actually allocate 10MB — just mock by testing the threshold logic
+    # We'll create a bytes object just over the cap
+    fake_large = b"\x00" * (_EMBED_SIZE_CAP + 1)
+    big_html = _render_binary_html(fake_large, "huge.tar.gz", "huge.tar.gz")
+    check("large binary has no saveFile", "saveFile" not in big_html, "should not embed >10MB")
+    check("large binary shows too-large message", "Too large" in big_html, "")
+    check("large binary still has filename", "huge.tar.gz" in big_html, "")
+    check("large binary still has resize observer", "ResizeObserver" in big_html, "")
+    # Free the large allocation immediately
+    del fake_large
+
+    print("\n── _render_binary_html: human-readable sizes ──")
+    html_1b = _render_binary_html(b"\x00", "f.bin", "f.bin")
+    check("1 byte shows as bytes", "1 B" in html_1b, "")
+    html_1kb = _render_binary_html(b"\x00" * 2048, "f.bin", "f.bin")
+    check("2048 bytes shows as KB", "KB" in html_1kb, "")
+    html_1mb = _render_binary_html(b"\x00" * (2 * 1024 * 1024), "f.bin", "f.bin")
+    check("2MB shows as MB", "MB" in html_1mb, "")
+
+    # ── Test 13: _highlight_code helper ──────────────────────────
     from daytona_sandbox import _highlight_code
     import html as html_mod
 
@@ -363,7 +517,7 @@ async def run_tests():
 
     # ── Cleanup ──────────────────────────────────────────────────
     print("\n── cleanup ──")
-    await tools.bash("rm -rf workspace/test_file.txt workspace/dup_test.txt workspace/deep workspace/test_project workspace/attach_test.py workspace/attach_test.txt", __user__=user, __event_emitter__=mock_emitter)
+    await tools.bash("rm -rf workspace/test_file.txt workspace/dup_test.txt workspace/deep workspace/test_project workspace/attach_test.py workspace/attach_test.txt workspace/test_image.png workspace/test_image.svg workspace/test_archive.zip workspace/test_binary.dat", __user__=user, __event_emitter__=mock_emitter)
 
     # Stop the sandbox to conserve resources
     import httpx

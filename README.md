@@ -40,7 +40,7 @@ After the control plane reports `state=started`, a readiness probe (`echo ready`
 | `read(path, offset, limit)` | Read file with line numbers | `GET /files/download`, client-side line slicing |
 | `write(path, content)` | Write/create file | `mkdir -p` parent via exec, then `POST /files/upload` |
 | `edit(path, old_string, new_string, replace_all)` | Exact string replacement | Download, string replace, re-upload. Rejects ambiguous matches unless `replace_all=True`. |
-| `attach(path)` | Show file to user without consuming model context | Returns `HTMLResponse` with syntax-highlighted code viewer rendered as an inline iframe. See [Rich attachments](#rich-attachments) below. |
+| `attach(path)` | Show file to user without consuming model context | Classifies file as text/image/binary, renders appropriate viewer as inline iframe. See [Rich attachments](#rich-attachments) below. |
 
 ### Key implementation details
 
@@ -64,18 +64,20 @@ Skills are discovered at `{project_path}/.agents/skills/*/SKILL.md`.
 
 The `attach` tool solves a fundamental problem with chat-based coding agents: the model shouldn't have to burn context tokens just to show the user a file. When the model calls `attach(path)`, the tool:
 
-1. Fetches the file from the sandbox
-2. Renders it as a self-contained HTML page with Pygments syntax highlighting, line numbers, and Copy/Save buttons
-3. Returns an OWUI `HTMLResponse` with `Content-Disposition: inline`, which OWUI renders as an inline iframe at the tool call site
+1. Fetches the file as raw bytes from the sandbox
+2. Classifies it as **text**, **image**, or **binary** based on extension (with a UTF-8 decode fallback heuristic)
+3. Renders the appropriate viewer as a self-contained HTML page
+4. Returns an OWUI `HTMLResponse` with `Content-Disposition: inline`, which OWUI renders as an inline iframe at the tool call site
 
 **What the model sees**: A short JSON confirmation (`"status": "success", "code": "ui_component"`). The file content never enters the context window. The model can use `read()` separately if it needs to inspect the content itself.
 
-**What the user sees**: A dark-themed code viewer (Catppuccin Mocha palette) with:
-- Syntax highlighting (server-side via Pygments — no CDN fetches from the sandboxed iframe)
-- Numbered lines
-- **Copy** button (copies raw file to clipboard)
-- **Save** button (triggers browser download with original filename)
-- Auto-sizing iframe height via `postMessage`
+**Three rendering modes**:
+
+| Mode | Detected by | What the user sees |
+|------|-------------|--------------------|
+| **Text** (default) | UTF-8 decodable, not an image/binary extension | Dark-themed code viewer (Catppuccin Mocha) with Pygments syntax highlighting, line numbers, Copy + Save buttons |
+| **Image** | Extension in `{png, jpg, jpeg, gif, svg, webp, bmp, ico, avif}` | Inline `<img>` rendered from a base64 data URI, with Save button |
+| **Binary** | Known binary extension (`zip`, `tar`, `pdf`, `whl`, `exe`, etc.) or UTF-8 decode failure | Download card showing filename, size, and file type. **Save** button included for files under 10 MB; larger files show metadata only |
 
 This uses OWUI's [Rich UI Embedding](https://docs.openwebui.com/features/extensibility/plugin/development/rich-ui) feature and works in Native function calling mode.
 
@@ -116,4 +118,4 @@ Deploy as tool ID `daytona_sandbox` on any Open WebUI instance:
 uv run --script test_harness.py
 ```
 
-Requires `DAYTONA_API_KEY` in a `.env` file or exported as an environment variable. Creates a sandbox labeled `test-harness`, runs 61 tests across all 6 tools, stops the sandbox on completion.
+Requires `DAYTONA_API_KEY` in a `.env` file or exported as an environment variable. Creates a sandbox labeled `test-harness`, runs 126 tests across all 6 tools (including attach modes for text, images, and binary files), stops the sandbox on completion.
