@@ -770,7 +770,10 @@ class Tools:
             )
 
             # Write script to temp file and execute it (avoids all quoting issues)
-            script_path = "/tmp/_onboard.sh"
+            script_tag = hashlib.sha1(
+                (p + str(time.time())).encode("utf-8", errors="replace")
+            ).hexdigest()[:12]
+            script_path = f"/tmp/_onboard_{script_tag}.sh"
             content_bytes = script.encode("utf-8")
             async with httpx.AsyncClient(timeout=60.0) as client:
                 await client.post(
@@ -879,7 +882,10 @@ class Tools:
                 + "\n"
             )
 
-            script_path = "/tmp/_cmd.sh"
+            script_tag = hashlib.sha1(
+                (command + str(time.time())).encode("utf-8", errors="replace")
+            ).hexdigest()[:12]
+            script_path = f"/tmp/_cmd_{script_tag}.sh"
             async with httpx.AsyncClient(timeout=300.0) as client:
                 # Upload the script
                 await client.post(

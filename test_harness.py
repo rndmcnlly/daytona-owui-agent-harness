@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
 Test harness for lathe.py toolkit.
-Exercises all seven tools against the live sandbox provider API.
+Exercises all tools against the live sandbox provider API.
 
 Usage:
-    uv run --script test_harness.py
+    uv run --script test_harness.py                # run all tests
+    uv run --script test_harness.py unit           # unit tests only (no sandbox)
+    uv run --script test_harness.py bash edit      # specific groups only
+    uv run --script test_harness.py --list         # list available groups
 """
 # /// script
 # requires-python = ">=3.11"
@@ -14,24 +17,36 @@ Usage:
 import asyncio
 import sys
 import os
+import time
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Import the toolkit
 sys.path.insert(0, os.path.dirname(__file__))
 from lathe import Tools
 
 API_KEY = os.environ.get("DAYTONA_API_KEY")
-if not API_KEY:
-    print("Error: DAYTONA_API_KEY not set. Add it to .env or export it.")
-    sys.exit(1)
 TEST_EMAIL = "test-harness@daytona-owui-test"
 
 
+# ── Test result tracking ─────────────────────────────────────────────
+
+class Results:
+    def __init__(self):
+        self.passed = 0
+        self.failed = 0
+
+    def check(self, name, condition, detail=""):
+        if condition:
+            print(f"  PASS: {name}")
+            self.passed += 1
+        else:
+            print(f"  FAIL: {name} — {detail}")
+            self.failed += 1
+
+
 async def mock_emitter(event):
-    """Print status events for visibility."""
     data = event.get("data", {})
     desc = data.get("description", "")
     done = data.get("done", False)
@@ -39,293 +54,437 @@ async def mock_emitter(event):
     print(f"  [{marker}] {desc}")
 
 
-async def run_tests():
-    tools = Tools()
-    tools.valves.daytona_api_key = API_KEY
-    tools.valves.deployment_label = "test-harness"
+# ── Unit tests (no sandbox needed) ──────────────────────────────────
 
-    user = {"email": TEST_EMAIL, "id": "test-id", "name": "Test User"}
+async def test_unit_parse_env_vars(R: Results):
+    from lathe import _parse_env_vars
 
-    passed = 0
-    failed = 0
+    print("\n── _parse_env_vars: valid JSON object ──")
+    pairs = _parse_env_vars('{"FOO":"bar","BAZ":"qux"}')
+    R.check("parses two pairs", len(pairs) == 2, f"got {len(pairs)}")
+    R.check("first key is FOO", pairs[0] == ("FOO", "bar"), str(pairs[0]))
+    R.check("second key is BAZ", pairs[1] == ("BAZ", "qux"), str(pairs[1]))
 
-    def check(name, condition, detail=""):
-        nonlocal passed, failed
-        if condition:
-            print(f"  PASS: {name}")
-            passed += 1
-        else:
-            print(f"  FAIL: {name} — {detail}")
-            failed += 1
+    print("\n── _parse_env_vars: empty / default ──")
+    R.check("empty string returns []", _parse_env_vars("") == [], str(_parse_env_vars("")))
+    R.check("bare {} returns []", _parse_env_vars("{}") == [], str(_parse_env_vars("{}")))
+    R.check("whitespace only returns []", _parse_env_vars("   ") == [], str(_parse_env_vars("   ")))
 
-    # ── Test 1: bash ─────────────────────────────────────────────
-    print("\n── bash: simple command ──")
-    result = await tools.bash("echo hello world", __user__=user, __event_emitter__=mock_emitter)
-    check("echo returns output", "hello world" in result, result[:200])
+    print("\n── _parse_env_vars: values with special chars ──")
+    pairs = _parse_env_vars('{"KEY":"val=ue","OTHER":"has spaces","QUOTE":"it\'s"}')
+    R.check("value with = preserved", ("KEY", "val=ue") in pairs, str(pairs))
+    R.check("value with spaces preserved", ("OTHER", "has spaces") in pairs, str(pairs))
+    R.check("value with quote preserved", ("QUOTE", "it's") in pairs, str(pairs))
 
-    print("\n── bash: compound command ──")
-    result = await tools.bash("echo one && echo two && echo three", __user__=user, __event_emitter__=mock_emitter)
-    check("compound && works", "one" in result and "two" in result and "three" in result, result[:200])
+    print("\n── _parse_env_vars: invalid keys skipped ──")
+    pairs = _parse_env_vars('{"GOOD":"yes","123bad":"no","also-bad":"no","_ok":"yes"}')
+    keys = [k for k, v in pairs]
+    R.check("GOOD accepted", "GOOD" in keys, str(keys))
+    R.check("_ok accepted", "_ok" in keys, str(keys))
+    R.check("123bad rejected", "123bad" not in keys, str(keys))
+    R.check("also-bad rejected", "also-bad" not in keys, str(keys))
 
-    print("\n── bash: pipes ──")
-    result = await tools.bash("echo 'hello world' | wc -w", __user__=user, __event_emitter__=mock_emitter)
-    check("pipe works", "2" in result, result[:200])
+    print("\n── _parse_env_vars: non-string values skipped ──")
+    pairs = _parse_env_vars('{"A":"ok","B":123,"C":true}')
+    R.check("only string values kept", len(pairs) == 1 and pairs[0] == ("A", "ok"), str(pairs))
 
-    print("\n── bash: exit code ──")
-    result = await tools.bash("exit 42", __user__=user, __event_emitter__=mock_emitter)
-    check("non-zero exit reported", "Exit code: 42" in result, result[:200])
+    print("\n── _parse_env_vars: invalid JSON returns [] ──")
+    R.check("garbage returns []", _parse_env_vars("not json") == [], "")
+    R.check("array returns []", _parse_env_vars('["a","b"]') == [], "")
 
-    print("\n── bash: working directory ──")
-    result = await tools.bash("pwd", __user__=user, __event_emitter__=mock_emitter)
-    check("default cwd is /home/daytona/workspace", "/home/daytona/workspace" in result, result[:200])
 
-    result = await tools.bash("pwd", workdir="/tmp", __user__=user, __event_emitter__=mock_emitter)
-    check("custom cwd works", "/tmp" in result, result[:200])
+async def test_unit_classify_file(R: Results):
+    from lathe import _classify_file
 
-    print("\n── bash: quoted flag values ──")
-    # This is the exact pattern that failed in production: --flag "value"
-    # Previously, the bash -c "..." wrapping mangled quoted flag values
-    result = await tools.bash(
-        'echo "--state" "open" | cat',
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("quoted flag values pass through", "--state" in result and "open" in result, result[:200])
+    print("\n── _classify_file: image extensions ──")
+    for ext in ["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico", "avif"]:
+        R.check(f".{ext} classified as image", _classify_file(f"file.{ext}", b"") == "image", f"got {_classify_file(f'file.{ext}', b'')}")
 
-    print("\n── bash: single quotes ──")
-    result = await tools.bash(
-        "echo 'hello world'",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("single quotes work", "hello world" in result, result[:200])
+    print("\n── _classify_file: binary extensions ──")
+    for ext in ["zip", "tar", "gz", "pdf", "exe", "whl", "sqlite", "mp3", "mp4", "woff2"]:
+        R.check(f".{ext} classified as binary", _classify_file(f"file.{ext}", b"") == "binary", f"got {_classify_file(f'file.{ext}', b'')}")
 
-    print("\n── bash: mixed quoting ──")
-    result = await tools.bash(
-        """echo "it's a 'test'" && echo 'say "hello"'""",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("mixed quotes work", "it's a 'test'" in result and 'say "hello"' in result, result[:200])
+    print("\n── _classify_file: text by content ──")
+    R.check("valid UTF-8 is text", _classify_file("file.unknown", b"hello world") == "text", "")
+    R.check("empty file is text", _classify_file("noext", b"") == "text", "")
+    R.check("UTF-8 with BOM is text", _classify_file("f.cfg", b"\xef\xbb\xbfhello") == "text", "")
 
-    print("\n── bash: backslashes ──")
-    result = await tools.bash(
-        r"echo 'back\slash'",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("backslashes preserved", "back\\slash" in result, result[:200])
+    print("\n── _classify_file: binary by content ──")
+    R.check("invalid UTF-8 is binary", _classify_file("file.dat", b"\x80\x81\x82") == "binary", "")
+    R.check("null bytes are valid UTF-8 (text)", _classify_file("file.bin", b"hello\x00world") == "text", "")
+    R.check(".exe classified by extension", _classify_file("file.exe", b"hello\x00world") == "binary", "")
 
-    print("\n── bash: dollar signs and variables ──")
-    result = await tools.bash(
-        'FOO=bar && echo "val=$FOO"',
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("variable expansion works", "val=bar" in result, result[:200])
 
-    print("\n── bash: set -e aborts on error ──")
-    result = await tools.bash(
-        "false\necho should-not-reach",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("set -e aborts on first failure", "Exit code:" in result, result[:200])
-    check("second command did not run", "should-not-reach" not in result, result[:200])
+async def test_unit_render_html(R: Results):
+    from lathe import _render_image_html, _render_binary_html, _EMBED_SIZE_CAP
 
-    print("\n── bash: pipefail catches pipe errors ──")
-    result = await tools.bash(
-        "false | cat",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("pipefail reports failure", "Exit code:" in result, result[:200])
+    print("\n── _render_image_html: structure ──")
+    img_html = _render_image_html(b"\x89PNG fake", "photo.png", "dir/photo.png")
+    R.check("image html has doctype", "<!DOCTYPE html>" in img_html, "")
+    R.check("image html has img tag", "<img " in img_html, "")
+    R.check("image html has correct mime", "image/png" in img_html, "")
+    R.check("image html has filename", "photo.png" in img_html, "")
+    R.check("image html has byte count", "9" in img_html, "should show 9 bytes")
+    R.check("image html has save function", "saveFile" in img_html, "")
+    R.check("image html has resize observer", "ResizeObserver" in img_html, "")
 
-    print("\n── bash: || true overrides set -e ──")
-    result = await tools.bash(
-        "false || true\necho survived",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("|| true suppresses abort", "survived" in result, result[:200])
+    print("\n── _render_binary_html: small file ──")
+    bin_html = _render_binary_html(b"\x00" * 100, "data.zip", "path/data.zip")
+    R.check("binary html has doctype", "<!DOCTYPE html>" in bin_html, "")
+    R.check("binary html has filename", "data.zip" in bin_html, "")
+    R.check("binary html shows ZIP type", "ZIP" in bin_html, "")
+    R.check("binary html has save for small file", "saveFile" in bin_html, "")
+    R.check("binary html has resize observer", "ResizeObserver" in bin_html, "")
 
-    # ── Test 2: write ────────────────────────────────────────────
+    print("\n── _render_binary_html: large file (over 10MB) ──")
+    fake_large = b"\x00" * (_EMBED_SIZE_CAP + 1)
+    big_html = _render_binary_html(fake_large, "huge.tar.gz", "huge.tar.gz")
+    R.check("large binary has no saveFile", "saveFile" not in big_html, "should not embed >10MB")
+    R.check("large binary shows too-large message", "Too large" in big_html, "")
+    R.check("large binary still has filename", "huge.tar.gz" in big_html, "")
+    R.check("large binary still has resize observer", "ResizeObserver" in big_html, "")
+    del fake_large
+
+    print("\n── _render_binary_html: human-readable sizes ──")
+    html_1b = _render_binary_html(b"\x00", "f.bin", "f.bin")
+    R.check("1 byte shows as bytes", "1 B" in html_1b, "")
+    html_1kb = _render_binary_html(b"\x00" * 2048, "f.bin", "f.bin")
+    R.check("2048 bytes shows as KB", "KB" in html_1kb, "")
+    html_1mb = _render_binary_html(b"\x00" * (2 * 1024 * 1024), "f.bin", "f.bin")
+    R.check("2MB shows as MB", "MB" in html_1mb, "")
+
+
+async def test_unit_highlight(R: Results):
+    from lathe import _highlight_code
+
+    print("\n── _highlight_code: Python ──")
+    hl = _highlight_code('def foo():\n    return 42\n', "test.py")
+    R.check("highlight produces spans", "<span" in hl, hl[:100])
+    R.check("highlight has inline styles", 'style="' in hl, hl[:100])
+    R.check("highlight preserves content", "foo" in hl and "42" in hl, hl[:100])
+
+    print("\n── _highlight_code: unknown extension ──")
+    hl_unk = _highlight_code("just text", "file.unknownext")
+    R.check("unknown ext still produces output", "just text" in hl_unk, hl_unk[:100])
+
+    print("\n── _highlight_code: no extension ──")
+    hl_none = _highlight_code("raw content", "Makefile")
+    R.check("no-ext file produces output", "raw content" in hl_none or "content" in hl_none, hl_none[:100])
+
+
+async def test_unit_truncate(R: Results):
+    from lathe import _truncate_tail, _MAX_LINES, _MAX_BYTES
+
+    print("\n── _truncate_tail: no truncation needed ──")
+    short = "line 1\nline 2\nline 3"
+    out, trunc, meta = _truncate_tail(short)
+    R.check("short text not truncated", not trunc, f"truncated={trunc}")
+    R.check("short text unchanged", out == short, out[:80])
+
+    print("\n── _truncate_tail: line limit ──")
+    many_lines = "\n".join(f"line {i}" for i in range(5000))
+    out, trunc, meta = _truncate_tail(many_lines)
+    R.check("many lines truncated", trunc, f"truncated={trunc}")
+    R.check("truncated by lines", meta["truncated_by"] == "lines", meta.get("truncated_by"))
+    R.check("keeps last N lines", out.endswith("line 4999"), out[-30:])
+    R.check("total_lines correct", meta["total_lines"] == 5000, meta.get("total_lines"))
+    out_line_count = out.count("\n") + 1
+    R.check(f"output has <= {_MAX_LINES} lines", out_line_count <= _MAX_LINES, f"got {out_line_count}")
+
+    print("\n── _truncate_tail: byte limit ──")
+    fat_lines = "\n".join(f"{'x' * 99}" for _ in range(600))
+    out, trunc, meta = _truncate_tail(fat_lines)
+    R.check("fat lines truncated", trunc, f"truncated={trunc}")
+    R.check("truncated by bytes", meta["truncated_by"] == "bytes", meta.get("truncated_by"))
+    out_bytes = len(out.encode("utf-8"))
+    R.check(f"output <= {_MAX_BYTES} bytes", out_bytes <= _MAX_BYTES, f"got {out_bytes}")
+
+    print("\n── _truncate_tail: empty string ──")
+    out, trunc, meta = _truncate_tail("")
+    R.check("empty string not truncated", not trunc, f"truncated={trunc}")
+
+
+# ── Integration tests (need sandbox) ────────────────────────────────
+
+async def test_int_bash(R: Results, tools: Tools, user: dict):
+
+    # These are all independent — run concurrently
+    async def t_simple():
+        print("\n── bash: simple command ──")
+        r = await tools.bash("echo hello world", __user__=user, __event_emitter__=mock_emitter)
+        R.check("echo returns output", "hello world" in r, r[:200])
+
+    async def t_compound():
+        print("\n── bash: compound command ──")
+        r = await tools.bash("echo one && echo two && echo three", __user__=user, __event_emitter__=mock_emitter)
+        R.check("compound && works", "one" in r and "two" in r and "three" in r, r[:200])
+
+    async def t_pipes():
+        print("\n── bash: pipes ──")
+        r = await tools.bash("echo 'hello world' | wc -w", __user__=user, __event_emitter__=mock_emitter)
+        R.check("pipe works", "2" in r, r[:200])
+
+    async def t_exit():
+        print("\n── bash: exit code ──")
+        r = await tools.bash("exit 42", __user__=user, __event_emitter__=mock_emitter)
+        R.check("non-zero exit reported", "Exit code: 42" in r, r[:200])
+
+    async def t_workdir():
+        print("\n── bash: working directory ──")
+        r = await tools.bash("pwd", __user__=user, __event_emitter__=mock_emitter)
+        R.check("default cwd is /home/daytona/workspace", "/home/daytona/workspace" in r, r[:200])
+        r = await tools.bash("pwd", workdir="/tmp", __user__=user, __event_emitter__=mock_emitter)
+        R.check("custom cwd works", "/tmp" in r, r[:200])
+
+    async def t_quoting():
+        print("\n── bash: quoted flag values ──")
+        r = await tools.bash('echo "--state" "open" | cat', __user__=user, __event_emitter__=mock_emitter)
+        R.check("quoted flag values pass through", "--state" in r and "open" in r, r[:200])
+
+        print("\n── bash: single quotes ──")
+        r = await tools.bash("echo 'hello world'", __user__=user, __event_emitter__=mock_emitter)
+        R.check("single quotes work", "hello world" in r, r[:200])
+
+        print("\n── bash: mixed quoting ──")
+        r = await tools.bash("""echo "it's a 'test'" && echo 'say "hello"'""", __user__=user, __event_emitter__=mock_emitter)
+        R.check("mixed quotes work", "it's a 'test'" in r and 'say "hello"' in r, r[:200])
+
+        print("\n── bash: backslashes ──")
+        r = await tools.bash(r"echo 'back\slash'", __user__=user, __event_emitter__=mock_emitter)
+        R.check("backslashes preserved", "back\\slash" in r, r[:200])
+
+    async def t_vars():
+        print("\n── bash: dollar signs and variables ──")
+        r = await tools.bash('FOO=bar && echo "val=$FOO"', __user__=user, __event_emitter__=mock_emitter)
+        R.check("variable expansion works", "val=bar" in r, r[:200])
+
+    async def t_set_e():
+        print("\n── bash: set -e aborts on error ──")
+        r = await tools.bash("false\necho should-not-reach", __user__=user, __event_emitter__=mock_emitter)
+        R.check("set -e aborts on first failure", "Exit code:" in r, r[:200])
+        R.check("second command did not run", "should-not-reach" not in r, r[:200])
+
+        print("\n── bash: pipefail catches pipe errors ──")
+        r = await tools.bash("false | cat", __user__=user, __event_emitter__=mock_emitter)
+        R.check("pipefail reports failure", "Exit code:" in r, r[:200])
+
+        print("\n── bash: || true overrides set -e ──")
+        r = await tools.bash("false || true\necho survived", __user__=user, __event_emitter__=mock_emitter)
+        R.check("|| true suppresses abort", "survived" in r, r[:200])
+
+    # First call creates sandbox; after that everything can fan out
+    await t_simple()
+    await asyncio.gather(t_compound(), t_pipes(), t_exit(), t_workdir(), t_quoting(), t_vars(), t_set_e())
+
+
+async def test_int_write_read_edit(R: Results, tools: Tools, user: dict):
+
     print("\n── write: create file ──")
     test_content = "line one\nline two\nline three\n"
-    result = await tools.write(
-        "workspace/test_file.txt", test_content,
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("write reports success", "Wrote" in result and "test_file.txt" in result, result[:200])
+    r = await tools.write("workspace/test_file.txt", test_content, __user__=user, __event_emitter__=mock_emitter)
+    R.check("write reports success", "Wrote" in r and "test_file.txt" in r, r[:200])
 
-    # ── Test 3: read ─────────────────────────────────────────────
     print("\n── read: full file ──")
-    result = await tools.read(
-        "workspace/test_file.txt",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("read returns content", "line one" in result and "line two" in result, result[:200])
-    check("read has line numbers", "1: line one" in result, result[:200])
-    check("read shows total lines", "3 lines total" in result, result[:200])
+    r = await tools.read("workspace/test_file.txt", __user__=user, __event_emitter__=mock_emitter)
+    R.check("read returns content", "line one" in r and "line two" in r, r[:200])
+    R.check("read has line numbers", "1: line one" in r, r[:200])
+    R.check("read shows total lines", "3 lines total" in r, r[:200])
 
-    print("\n── read: offset and limit ──")
-    result = await tools.read(
-        "workspace/test_file.txt", offset=2, limit=1,
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("offset/limit works", "2: line two" in result, result[:200])
-    check("respects limit", "line three" not in result, result[:200])
+    # Independent reads
+    async def t_offset():
+        print("\n── read: offset and limit ──")
+        r = await tools.read("workspace/test_file.txt", offset=2, limit=1, __user__=user, __event_emitter__=mock_emitter)
+        R.check("offset/limit works", "2: line two" in r, r[:200])
+        R.check("respects limit", "line three" not in r, r[:200])
 
-    print("\n── read: file not found ──")
-    result = await tools.read(
-        "workspace/nonexistent.txt",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("reports file not found", "Error" in result or "not found" in result.lower(), result[:200])
+    async def t_notfound():
+        print("\n── read: file not found ──")
+        r = await tools.read("workspace/nonexistent.txt", __user__=user, __event_emitter__=mock_emitter)
+        R.check("reports file not found", "Error" in r or "not found" in r.lower(), r[:200])
 
-    # ── Test 4: edit ─────────────────────────────────────────────
+    await asyncio.gather(t_offset(), t_notfound())
+
     print("\n── edit: single replacement ──")
-    result = await tools.edit(
-        "workspace/test_file.txt", "line two", "LINE TWO EDITED",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("edit reports success", "Replaced 1" in result, result[:200])
+    r = await tools.edit("workspace/test_file.txt", "line two", "LINE TWO EDITED", __user__=user, __event_emitter__=mock_emitter)
+    R.check("edit reports success", "Replaced 1" in r, r[:200])
 
-    # Verify the edit stuck
-    result = await tools.read(
-        "workspace/test_file.txt",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("edit persisted", "LINE TWO EDITED" in result, result[:200])
-    check("other lines untouched", "line one" in result and "line three" in result, result[:200])
+    r = await tools.read("workspace/test_file.txt", __user__=user, __event_emitter__=mock_emitter)
+    R.check("edit persisted", "LINE TWO EDITED" in r, r[:200])
+    R.check("other lines untouched", "line one" in r and "line three" in r, r[:200])
 
-    print("\n── edit: old_string not found ──")
-    result = await tools.edit(
-        "workspace/test_file.txt", "this text does not exist", "replacement",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("reports not found", "not found" in result.lower(), result[:200])
+    # Independent edit tests
+    async def t_edit_notfound():
+        print("\n── edit: old_string not found ──")
+        r = await tools.edit("workspace/test_file.txt", "this text does not exist", "replacement", __user__=user, __event_emitter__=mock_emitter)
+        R.check("reports not found", "not found" in r.lower(), r[:200])
 
-    print("\n── edit: multiple matches without replace_all ──")
-    # Write a file with duplicate content
-    await tools.write(
-        "workspace/dup_test.txt", "aaa\nbbb\naaa\nbbb\naaa\n",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    result = await tools.edit(
-        "workspace/dup_test.txt", "aaa", "zzz",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("rejects ambiguous edit", "3 matches" in result or "multiple" in result.lower(), result[:200])
+    async def t_edit_multi():
+        print("\n── edit: multiple matches without replace_all ──")
+        await tools.write("workspace/dup_test.txt", "aaa\nbbb\naaa\nbbb\naaa\n", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.edit("workspace/dup_test.txt", "aaa", "zzz", __user__=user, __event_emitter__=mock_emitter)
+        R.check("rejects ambiguous edit", "3 matches" in r or "multiple" in r.lower(), r[:200])
 
-    print("\n── edit: replace_all ──")
-    result = await tools.edit(
-        "workspace/dup_test.txt", "aaa", "zzz", replace_all=True,
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("replace_all reports count", "Replaced 3" in result, result[:200])
+        print("\n── edit: replace_all ──")
+        r = await tools.edit("workspace/dup_test.txt", "aaa", "zzz", replace_all=True, __user__=user, __event_emitter__=mock_emitter)
+        R.check("replace_all reports count", "Replaced 3" in r, r[:200])
+        r = await tools.read("workspace/dup_test.txt", __user__=user, __event_emitter__=mock_emitter)
+        R.check("replace_all applied", "aaa" not in r and "zzz" in r, r[:200])
 
-    result = await tools.read(
-        "workspace/dup_test.txt",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("replace_all applied", "aaa" not in result and "zzz" in result, result[:200])
+    async def t_edit_missing():
+        print("\n── edit: file not found ──")
+        r = await tools.edit("workspace/nonexistent.txt", "foo", "bar", __user__=user, __event_emitter__=mock_emitter)
+        R.check("edit on missing file errors", "Error" in r or "not found" in r.lower(), r[:200])
 
-    print("\n── edit: file not found ──")
-    result = await tools.edit(
-        "workspace/nonexistent.txt", "foo", "bar",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("edit on missing file errors", "Error" in result or "not found" in result.lower(), result[:200])
+    async def t_nested():
+        print("\n── write: nested path ──")
+        r = await tools.write("workspace/deep/nested/dir/file.txt", "nested content\n", __user__=user, __event_emitter__=mock_emitter)
+        R.check("write to nested path succeeds", "Wrote" in r, r[:200])
+        r = await tools.read("workspace/deep/nested/dir/file.txt", __user__=user, __event_emitter__=mock_emitter)
+        R.check("nested file readable", "nested content" in r, r[:200])
 
-    # ── Test 5: write creates parent dirs ────────────────────────
-    print("\n── write: nested path ──")
-    result = await tools.write(
-        "workspace/deep/nested/dir/file.txt", "nested content\n",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("write to nested path succeeds", "Wrote" in result, result[:200])
+    await asyncio.gather(t_edit_notfound(), t_edit_multi(), t_edit_missing(), t_nested())
 
-    result = await tools.read(
-        "workspace/deep/nested/dir/file.txt",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("nested file readable", "nested content" in result, result[:200])
+    # cleanup
+    await tools.bash("rm -rf workspace/test_file.txt workspace/dup_test.txt workspace/deep", __user__=user, __event_emitter__=mock_emitter)
 
-    # ── Test 7: attach ───────────────────────────────────────────
+
+async def test_int_attach(R: Results, tools: Tools, user: dict):
     from fastapi.responses import HTMLResponse
-
-    print("\n── attach: Python file ──")
-    py_content = 'def greet(name):\n    return f"Hello, {name}!"\n\nprint(greet("world"))\n'
-    await tools.write(
-        "workspace/attach_test.py", py_content,
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    result = await tools.attach(
-        "workspace/attach_test.py",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
-    body = result.body.decode("utf-8")
-    check("has Content-Disposition inline", result.headers.get("content-disposition") == "inline", result.headers.get("content-disposition", ""))
-    check("contains filename in header", "attach_test.py" in body, "")
-    check("contains line count", "4 lines" in body, "")
-    check("contains byte count", str(len(py_content.encode("utf-8"))) in body, "")
-    check("contains height reporting script", "iframe:height" in body, "")
-    check("contains copy button", "Copy" in body and "copyFile" in body, "")
-    check("contains save button", "Save" in body and "saveFile" in body, "")
-
-    print("\n── attach: syntax highlighting ──")
-    # Pygments should produce <span style= tokens for Python
-    check("has Pygments highlighting spans", 'style="' in body and "<span" in body, "no inline styles found")
-    check("contains the function content", "greet" in body, "")
-
-    print("\n── attach: plain text file ──")
-    await tools.write(
-        "workspace/attach_test.txt", "just plain text\nno highlighting\n",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    result = await tools.attach(
-        "workspace/attach_test.txt",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("txt returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
-    body_txt = result.body.decode("utf-8")
-    check("txt contains content", "just plain text" in body_txt, "")
-    check("txt contains filename", "attach_test.txt" in body_txt, "")
-
-    print("\n── attach: file not found ──")
-    result = await tools.attach(
-        "workspace/nonexistent_file.xyz",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("missing file returns error string", isinstance(result, str) and "Error" in result, str(result)[:200])
-
-    print("\n── attach: base64 round-trip ──")
     import base64
-    # Verify the base64 payload in the HTML decodes to the original content
     import re
-    b64_match = re.search(r'atob\("([A-Za-z0-9+/=]+)"\)', body)
-    check("base64 payload present", b64_match is not None, "no atob() found")
-    if b64_match:
-        decoded = base64.b64decode(b64_match.group(1)).decode("utf-8")
-        check("base64 decodes to original content", decoded == py_content, f"got {decoded[:80]}...")
+    import struct
+    import zlib as _zlib
 
-    # ── Test 6: onboard ──────────────────────────────────────────
-    # Clean slate for onboard tests (paths relative to /home/daytona, matching write() paths)
+    # Setup: create test files concurrently
+    py_content = 'def greet(name):\n    return f"Hello, {name}!"\n\nprint(greet("world"))\n'
+    svg_content = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect fill="red" width="10" height="10"/></svg>'
+
+    def _make_tiny_png():
+        def _chunk(ctype, data):
+            c = ctype + data
+            return struct.pack(">I", len(data)) + c + struct.pack(">I", _zlib.crc32(c) & 0xFFFFFFFF)
+        sig = b"\x89PNG\r\n\x1a\n"
+        ihdr = _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+        raw_row = b"\x00\xff\x00\x00"
+        idat = _chunk(b"IDAT", _zlib.compress(raw_row))
+        iend = _chunk(b"IEND", b"")
+        return sig + ihdr + idat + iend
+
+    png_b64 = base64.b64encode(_make_tiny_png()).decode()
+
+    await asyncio.gather(
+        tools.write("workspace/attach_test.py", py_content, __user__=user, __event_emitter__=mock_emitter),
+        tools.write("workspace/attach_test.txt", "just plain text\nno highlighting\n", __user__=user, __event_emitter__=mock_emitter),
+        tools.write("workspace/test_image.svg", svg_content, __user__=user, __event_emitter__=mock_emitter),
+        tools.bash(f"echo '{png_b64}' | base64 -d > /home/daytona/workspace/test_image.png", __user__=user, __event_emitter__=mock_emitter),
+        tools.bash("cd /home/daytona/workspace && echo 'hello from zip' > _zipme.txt && zip test_archive.zip _zipme.txt && rm _zipme.txt", __user__=user, __event_emitter__=mock_emitter),
+        tools.bash(r"printf '\x80\x81\x82\xff\xfe\xfd' > /home/daytona/workspace/test_binary.dat", __user__=user, __event_emitter__=mock_emitter),
+    )
+
+    # Now run all attach tests concurrently
+    async def t_py():
+        print("\n── attach: Python file ──")
+        result = await tools.attach("workspace/attach_test.py", __user__=user, __event_emitter__=mock_emitter)
+        R.check("returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
+        body = result.body.decode("utf-8")
+        R.check("has Content-Disposition inline", result.headers.get("content-disposition") == "inline", result.headers.get("content-disposition", ""))
+        R.check("contains filename in header", "attach_test.py" in body, "")
+        R.check("contains line count", "4 lines" in body, "")
+        R.check("contains byte count", str(len(py_content.encode("utf-8"))) in body, "")
+        R.check("contains height reporting script", "iframe:height" in body, "")
+        R.check("contains copy button", "Copy" in body and "copyFile" in body, "")
+        R.check("contains save button", "Save" in body and "saveFile" in body, "")
+
+        print("\n── attach: syntax highlighting ──")
+        R.check("has Pygments highlighting spans", 'style="' in body and "<span" in body, "no inline styles found")
+        R.check("contains the function content", "greet" in body, "")
+
+        print("\n── attach: base64 round-trip ──")
+        b64_match = re.search(r'atob\("([A-Za-z0-9+/=]+)"\)', body)
+        R.check("base64 payload present", b64_match is not None, "no atob() found")
+        if b64_match:
+            decoded = base64.b64decode(b64_match.group(1)).decode("utf-8")
+            R.check("base64 decodes to original content", decoded == py_content, f"got {decoded[:80]}...")
+
+    async def t_txt():
+        print("\n── attach: plain text file ──")
+        result = await tools.attach("workspace/attach_test.txt", __user__=user, __event_emitter__=mock_emitter)
+        R.check("txt returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
+        body_txt = result.body.decode("utf-8")
+        R.check("txt contains content", "just plain text" in body_txt, "")
+        R.check("txt contains filename", "attach_test.txt" in body_txt, "")
+
+    async def t_notfound():
+        print("\n── attach: file not found ──")
+        result = await tools.attach("workspace/nonexistent_file.xyz", __user__=user, __event_emitter__=mock_emitter)
+        R.check("missing file returns error string", isinstance(result, str) and "Error" in result, str(result)[:200])
+
+    async def t_png():
+        print("\n── attach: PNG image ──")
+        result = await tools.attach("workspace/test_image.png", __user__=user, __event_emitter__=mock_emitter)
+        R.check("image returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
+        if not isinstance(result, HTMLResponse):
+            return
+        img_body = result.body.decode("utf-8")
+        R.check("image has <img> tag", "<img " in img_body, "")
+        R.check("image has data URI", "data:image/png;base64," in img_body, "")
+        R.check("image has filename", "test_image.png" in img_body, "")
+        R.check("image has Save button", "Save" in img_body and "saveFile" in img_body, "")
+        R.check("image does NOT have Copy button", "copyFile" not in img_body, "image shouldn't have Copy")
+        R.check("image does NOT have line numbers", "gutter" not in img_body, "image shouldn't have line gutter")
+        R.check("image has height reporting", "iframe:height" in img_body, "")
+
+    async def t_svg():
+        print("\n── attach: SVG image ──")
+        result = await tools.attach("workspace/test_image.svg", __user__=user, __event_emitter__=mock_emitter)
+        R.check("SVG returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
+        if not isinstance(result, HTMLResponse):
+            return
+        svg_body = result.body.decode("utf-8")
+        R.check("SVG renders as image not code", "<img " in svg_body, "SVG should render as <img>")
+        R.check("SVG has correct MIME", "image/svg+xml" in svg_body, "")
+
+    async def t_zip():
+        print("\n── attach: ZIP binary file ──")
+        result = await tools.attach("workspace/test_archive.zip", __user__=user, __event_emitter__=mock_emitter)
+        R.check("zip returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
+        zip_body = result.body.decode("utf-8")
+        R.check("zip shows filename", "test_archive.zip" in zip_body, "")
+        R.check("zip shows file type", "ZIP" in zip_body, "")
+        R.check("zip has download card (no code viewer)", "gutter" not in zip_body, "binary shouldn't have line gutter")
+        R.check("zip has Save button (under 10MB)", "saveFile" in zip_body, "small zip should be downloadable")
+        R.check("zip does NOT have Copy button", "copyFile" not in zip_body, "binary shouldn't have Copy")
+        R.check("zip has height reporting", "iframe:height" in zip_body, "")
+
+    async def t_dat():
+        print("\n── attach: binary by content (not extension) ──")
+        result = await tools.attach("workspace/test_binary.dat", __user__=user, __event_emitter__=mock_emitter)
+        R.check("non-UTF8 dat returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
+        if not isinstance(result, HTMLResponse):
+            return
+        dat_body = result.body.decode("utf-8")
+        R.check("non-UTF8 renders as binary card", "gutter" not in dat_body and "<img" not in dat_body, "should be download card")
+        R.check("non-UTF8 has Save button", "saveFile" in dat_body, "small binary should be downloadable")
+
+    await asyncio.gather(t_py(), t_txt(), t_notfound(), t_png(), t_svg(), t_zip(), t_dat())
+
+    # cleanup
+    await tools.bash("rm -f workspace/attach_test.py workspace/attach_test.txt workspace/test_image.png workspace/test_image.svg workspace/test_archive.zip workspace/test_binary.dat", __user__=user, __event_emitter__=mock_emitter)
+
+
+async def test_int_onboard(R: Results, tools: Tools, user: dict):
+
     await tools.bash("rm -rf /home/daytona/workspace/test_project /home/daytona/workspace/empty_project", __user__=user, __event_emitter__=mock_emitter)
 
     print("\n── onboard: missing context ──")
-    result = await tools.onboard(
-        "/home/daytona/workspace/empty_project",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("fails without AGENTS.md or .agents/", "Error" in result, result[:200])
+    r = await tools.onboard("/home/daytona/workspace/empty_project", __user__=user, __event_emitter__=mock_emitter)
+    R.check("fails without AGENTS.md or .agents/", "Error" in r, r[:200])
 
     print("\n── onboard: AGENTS.md only ──")
-    await tools.write(
-        "workspace/test_project/AGENTS.md",
-        "# Test Agent\nYou are a helpful test agent.\n",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    result = await tools.onboard(
-        "/home/daytona/workspace/test_project",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("returns AGENTS.md content", "helpful test agent" in result, result[:300])
-    check("no skills section when none exist", "Available Skills" not in result, result[:300])
+    await tools.write("workspace/test_project/AGENTS.md", "# Test Agent\nYou are a helpful test agent.\n", __user__=user, __event_emitter__=mock_emitter)
+    r = await tools.onboard("/home/daytona/workspace/test_project", __user__=user, __event_emitter__=mock_emitter)
+    R.check("returns AGENTS.md content", "helpful test agent" in r, r[:300])
+    R.check("no skills section when none exist", "Available Skills" not in r, r[:300])
 
     print("\n── onboard: with skills ──")
     await tools.write(
@@ -333,278 +492,98 @@ async def run_tests():
         "---\nname: test-skill\ndescription: A skill for testing things.\n---\n\n# Test Skill\nDetailed instructions here.\n",
         __user__=user, __event_emitter__=mock_emitter,
     )
-    result = await tools.onboard(
-        "/home/daytona/workspace/test_project",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("returns AGENTS.md", "helpful test agent" in result, result[:500])
-    check("lists skill name", "test-skill" in result, result[:500])
-    check("lists skill description", "testing things" in result, result[:500])
-    check("includes SKILL.md path", "SKILL.md" in result, result[:500])
-    check("does NOT include skill body", "Detailed instructions here" not in result, result[:500])
+    r = await tools.onboard("/home/daytona/workspace/test_project", __user__=user, __event_emitter__=mock_emitter)
+    R.check("returns AGENTS.md", "helpful test agent" in r, r[:500])
+    R.check("lists skill name", "test-skill" in r, r[:500])
+    R.check("lists skill description", "testing things" in r, r[:500])
+    R.check("includes SKILL.md path", "SKILL.md" in r, r[:500])
+    R.check("does NOT include skill body", "Detailed instructions here" not in r, r[:500])
 
-    # ── Test 8: attach image file ──────────────────────────────
-    print("\n── attach: PNG image ──")
-    # Create a minimal valid 1x1 red PNG (67 bytes)
-    import struct, zlib as _zlib
-    def _make_tiny_png():
-        def _chunk(ctype, data):
-            c = ctype + data
-            return struct.pack(">I", len(data)) + c + struct.pack(">I", _zlib.crc32(c) & 0xFFFFFFFF)
-        sig = b"\x89PNG\r\n\x1a\n"
-        ihdr = _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
-        raw_row = b"\x00\xff\x00\x00"  # filter byte + RGB
-        idat = _chunk(b"IDAT", _zlib.compress(raw_row))
-        iend = _chunk(b"IEND", b"")
-        return sig + ihdr + idat + iend
+    await tools.bash("rm -rf /home/daytona/workspace/test_project /home/daytona/workspace/empty_project", __user__=user, __event_emitter__=mock_emitter)
 
-    png_bytes = _make_tiny_png()
-    # Write via bash since write() is text-oriented
-    import base64 as _b64
-    png_b64 = _b64.b64encode(png_bytes).decode()
-    await tools.bash(
-        f"echo '{png_b64}' | base64 -d > /home/daytona/workspace/test_image.png",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    result = await tools.attach(
-        "workspace/test_image.png",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("image returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
-    img_body = result.body.decode("utf-8")
-    check("image has <img> tag", "<img " in img_body, "")
-    check("image has data URI", "data:image/png;base64," in img_body, "")
-    check("image has filename", "test_image.png" in img_body, "")
-    check("image has Save button", "Save" in img_body and "saveFile" in img_body, "")
-    check("image does NOT have Copy button", "copyFile" not in img_body, "image shouldn't have Copy")
-    check("image does NOT have line numbers", "gutter" not in img_body, "image shouldn't have line gutter")
-    check("image has height reporting", "iframe:height" in img_body, "")
 
-    print("\n── attach: SVG image ──")
-    svg_content = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect fill="red" width="10" height="10"/></svg>'
-    await tools.write(
-        "workspace/test_image.svg", svg_content,
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    result = await tools.attach(
-        "workspace/test_image.svg",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("SVG returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
-    svg_body = result.body.decode("utf-8")
-    check("SVG renders as image not code", "<img " in svg_body, "SVG should render as <img>")
-    check("SVG has correct MIME", "image/svg+xml" in svg_body, "")
+async def test_int_truncation(R: Results, tools: Tools, user: dict):
+    import re
 
-    # ── Test 9: attach binary file ───────────────────────────────
-    print("\n── attach: ZIP binary file ──")
-    # Create a minimal zip file in the sandbox
-    await tools.bash(
-        "cd /home/daytona/workspace && echo 'hello from zip' > _zipme.txt && zip test_archive.zip _zipme.txt && rm _zipme.txt",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    result = await tools.attach(
-        "workspace/test_archive.zip",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("zip returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
-    zip_body = result.body.decode("utf-8")
-    check("zip shows filename", "test_archive.zip" in zip_body, "")
-    check("zip shows file type", "ZIP" in zip_body, "")
-    check("zip has download card (no code viewer)", "gutter" not in zip_body, "binary shouldn't have line gutter")
-    check("zip has Save button (under 10MB)", "saveFile" in zip_body, "small zip should be downloadable")
-    check("zip does NOT have Copy button", "copyFile" not in zip_body, "binary shouldn't have Copy")
-    check("zip has height reporting", "iframe:height" in zip_body, "")
-
-    print("\n── attach: binary by content (not extension) ──")
-    # Write raw bytes that aren't valid UTF-8, with an ambiguous extension
-    await tools.bash(
-        r"printf '\x80\x81\x82\xff\xfe\xfd' > /home/daytona/workspace/test_binary.dat",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    result = await tools.attach(
-        "workspace/test_binary.dat",
-        __user__=user, __event_emitter__=mock_emitter,
-    )
-    check("non-UTF8 dat returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
-    dat_body = result.body.decode("utf-8")
-    check("non-UTF8 renders as binary card", "gutter" not in dat_body and "<img" not in dat_body, "should be download card")
-    check("non-UTF8 has Save button", "saveFile" in dat_body, "small binary should be downloadable")
-
-    # ── Test 10: _classify_file unit tests ───────────────────────
-    from lathe import _classify_file
-
-    print("\n── _classify_file: image extensions ──")
-    for ext in ["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico", "avif"]:
-        check(f".{ext} classified as image", _classify_file(f"file.{ext}", b"") == "image", f"got {_classify_file(f'file.{ext}', b'')}")
-
-    print("\n── _classify_file: binary extensions ──")
-    for ext in ["zip", "tar", "gz", "pdf", "exe", "whl", "sqlite", "mp3", "mp4", "woff2"]:
-        check(f".{ext} classified as binary", _classify_file(f"file.{ext}", b"") == "binary", f"got {_classify_file(f'file.{ext}', b'')}")
-
-    print("\n── _classify_file: text by content ──")
-    check("valid UTF-8 is text", _classify_file("file.unknown", b"hello world") == "text", "")
-    check("empty file is text", _classify_file("noext", b"") == "text", "")
-    check("UTF-8 with BOM is text", _classify_file("f.cfg", b"\xef\xbb\xbfhello") == "text", "")
-
-    print("\n── _classify_file: binary by content ──")
-    check("invalid UTF-8 is binary", _classify_file("file.dat", b"\x80\x81\x82") == "binary", "")
-    # Note: null bytes are valid UTF-8 (U+0000), so b"hello\x00world" classifies as text.
-    # .bin is not in _BINARY_EXTS, so classification falls through to decode heuristic.
-    check("null bytes are valid UTF-8 (text)", _classify_file("file.bin", b"hello\x00world") == "text", "")
-    # But .bin-like extensions that ARE in the binary list get caught by extension
-    check(".exe classified by extension", _classify_file("file.exe", b"hello\x00world") == "binary", "")
-
-    # ── Test 11: _render_image_html unit tests ───────────────────
-    from lathe import _render_image_html, _render_binary_html
-
-    print("\n── _render_image_html: structure ──")
-    img_html = _render_image_html(b"\x89PNG fake", "photo.png", "dir/photo.png")
-    check("image html has doctype", "<!DOCTYPE html>" in img_html, "")
-    check("image html has img tag", "<img " in img_html, "")
-    check("image html has correct mime", "image/png" in img_html, "")
-    check("image html has filename", "photo.png" in img_html, "")
-    check("image html has byte count", "9" in img_html, "should show 9 bytes")  # len(b"\x89PNG fake")
-    check("image html has save function", "saveFile" in img_html, "")
-    check("image html has resize observer", "ResizeObserver" in img_html, "")
-
-    # ── Test 12: _render_binary_html unit tests ──────────────────
-    print("\n── _render_binary_html: small file ──")
-    bin_html = _render_binary_html(b"\x00" * 100, "data.zip", "path/data.zip")
-    check("binary html has doctype", "<!DOCTYPE html>" in bin_html, "")
-    check("binary html has filename", "data.zip" in bin_html, "")
-    check("binary html shows ZIP type", "ZIP" in bin_html, "")
-    check("binary html has save for small file", "saveFile" in bin_html, "")
-    check("binary html has resize observer", "ResizeObserver" in bin_html, "")
-
-    print("\n── _render_binary_html: large file (over 10MB) ──")
-    from lathe import _EMBED_SIZE_CAP
-    # Don't actually allocate 10MB — just mock by testing the threshold logic
-    # We'll create a bytes object just over the cap
-    fake_large = b"\x00" * (_EMBED_SIZE_CAP + 1)
-    big_html = _render_binary_html(fake_large, "huge.tar.gz", "huge.tar.gz")
-    check("large binary has no saveFile", "saveFile" not in big_html, "should not embed >10MB")
-    check("large binary shows too-large message", "Too large" in big_html, "")
-    check("large binary still has filename", "huge.tar.gz" in big_html, "")
-    check("large binary still has resize observer", "ResizeObserver" in big_html, "")
-    # Free the large allocation immediately
-    del fake_large
-
-    print("\n── _render_binary_html: human-readable sizes ──")
-    html_1b = _render_binary_html(b"\x00", "f.bin", "f.bin")
-    check("1 byte shows as bytes", "1 B" in html_1b, "")
-    html_1kb = _render_binary_html(b"\x00" * 2048, "f.bin", "f.bin")
-    check("2048 bytes shows as KB", "KB" in html_1kb, "")
-    html_1mb = _render_binary_html(b"\x00" * (2 * 1024 * 1024), "f.bin", "f.bin")
-    check("2MB shows as MB", "MB" in html_1mb, "")
-
-    # ── Test 13: _highlight_code helper ──────────────────────────
-    from lathe import _highlight_code
-    import html as html_mod
-
-    print("\n── _highlight_code: Python ──")
-    hl = _highlight_code('def foo():\n    return 42\n', "test.py")
-    check("highlight produces spans", "<span" in hl, hl[:100])
-    check("highlight has inline styles", 'style="' in hl, hl[:100])
-    check("highlight preserves content", "foo" in hl and "42" in hl, hl[:100])
-
-    print("\n── _highlight_code: unknown extension ──")
-    hl_unk = _highlight_code("just text", "file.unknownext")
-    check("unknown ext still produces output", "just text" in hl_unk, hl_unk[:100])
-
-    print("\n── _highlight_code: no extension ──")
-    hl_none = _highlight_code("raw content", "Makefile")
-    check("no-ext file produces output", "raw content" in hl_none or "content" in hl_none, hl_none[:100])
-
-    # ── Test 14: _truncate_tail unit tests ──────────────────────────
-    from lathe import _truncate_tail, _MAX_LINES, _MAX_BYTES
-
-    print("\n── _truncate_tail: no truncation needed ──")
-    short = "line 1\nline 2\nline 3"
-    out, trunc, meta = _truncate_tail(short)
-    check("short text not truncated", not trunc, f"truncated={trunc}")
-    check("short text unchanged", out == short, out[:80])
-
-    print("\n── _truncate_tail: line limit ──")
-    many_lines = "\n".join(f"line {i}" for i in range(5000))
-    out, trunc, meta = _truncate_tail(many_lines)
-    check("many lines truncated", trunc, f"truncated={trunc}")
-    check("truncated by lines", meta["truncated_by"] == "lines", meta.get("truncated_by"))
-    check("keeps last N lines", out.endswith("line 4999"), out[-30:])
-    check("total_lines correct", meta["total_lines"] == 5000, meta.get("total_lines"))
-    out_line_count = out.count("\n") + 1
-    check(f"output has <= {_MAX_LINES} lines", out_line_count <= _MAX_LINES, f"got {out_line_count}")
-
-    print("\n── _truncate_tail: byte limit ──")
-    # Create output that's under line limit but over byte limit
-    # Each line is ~100 bytes, 600 lines = ~60KB > 50KB limit
-    fat_lines = "\n".join(f"{'x' * 99}" for _ in range(600))
-    out, trunc, meta = _truncate_tail(fat_lines)
-    check("fat lines truncated", trunc, f"truncated={trunc}")
-    check("truncated by bytes", meta["truncated_by"] == "bytes", meta.get("truncated_by"))
-    out_bytes = len(out.encode("utf-8"))
-    check(f"output <= {_MAX_BYTES} bytes", out_bytes <= _MAX_BYTES, f"got {out_bytes}")
-
-    print("\n── _truncate_tail: empty string ──")
-    out, trunc, meta = _truncate_tail("")
-    check("empty string not truncated", not trunc, f"truncated={trunc}")
-
-    # ── Test 15: bash output truncation (integration) ────────────
     print("\n── bash: output truncation with spill file ──")
-    # Generate 3000 lines of output — should trigger truncation
     result = await tools.bash(
         "for i in $(seq 1 3000); do echo \"output line $i\"; done",
         __user__=user, __event_emitter__=mock_emitter,
     )
-    check("truncated output has notice", "[Showing lines" in result, result[-200:])
-    check("notice mentions full output file", "/tmp/_bash_output_" in result, result[-200:])
-    check("last line present in output", "output line 3000" in result, result[-200:])
-    check("first line NOT in truncated output", "output line 1\n" not in result, "line 1 should be truncated away")
+    R.check("truncated output has notice", "[Showing lines" in result, result[-200:])
+    R.check("notice mentions full output file", "/tmp/_bash_output_" in result, result[-200:])
+    R.check("last line present in output", "output line 3000" in result, result[-200:])
+    R.check("first line NOT in truncated output", "output line 1\n" not in result, "line 1 should be truncated away")
 
-    # Verify the spill file exists and contains everything
-    import re
     spill_match = re.search(r"/tmp/_bash_output_\w+\.log", result)
     if spill_match:
         spill_path = spill_match.group(0)
-        # Check the file is accessible and has the full content
-        verify = await tools.bash(
-            f"wc -l < {spill_path}",
-            __user__=user, __event_emitter__=mock_emitter,
+        verify, head_result = await asyncio.gather(
+            tools.bash(f"wc -l < {spill_path}", __user__=user, __event_emitter__=mock_emitter),
+            tools.bash(f"head -n 3 {spill_path}", __user__=user, __event_emitter__=mock_emitter),
         )
-        check("spill file has all 3000 lines", "3000" in verify, verify.strip())
-
-        # Check we can read a specific slice from it
-        head_result = await tools.bash(
-            f"head -n 3 {spill_path}",
-            __user__=user, __event_emitter__=mock_emitter,
-        )
-        check("can retrieve early lines from spill file", "output line 1" in head_result, head_result[:100])
+        R.check("spill file has all 3000 lines", "3000" in verify, verify.strip())
+        R.check("can retrieve early lines from spill file", "output line 1" in head_result, head_result[:100])
     else:
-        check("spill file path found in notice", False, "no path match found")
+        R.check("spill file path found in notice", False, "no path match found")
 
     print("\n── bash: small output NOT truncated ──")
     result = await tools.bash("echo hello", __user__=user, __event_emitter__=mock_emitter)
-    check("small output has no truncation notice", "[Showing lines" not in result, result[:200])
+    R.check("small output has no truncation notice", "[Showing lines" not in result, result[:200])
 
-    # ── Test 16: _ensure_sandbox label filtering ─────────────────
+    await tools.bash("rm -f /tmp/_bash_output_*.log", __user__=user, __event_emitter__=mock_emitter)
+
+
+async def test_int_env_vars(R: Results, tools: Tools, user: dict):
+
+    class FakeUserValves:
+        env_vars = '{"LATHE_TEST_SECRET":"hunter2","LATHE_TEST_GREETING":"hello world"}'
+
+    user_with_valves = {**user, "valves": FakeUserValves()}
+
+    async def t_basic():
+        print("\n── bash: UserValves env vars injected ──")
+        r = await tools.bash("echo $LATHE_TEST_SECRET", __user__=user_with_valves, __event_emitter__=mock_emitter)
+        R.check("secret var is available", "hunter2" in r, r[:200])
+        r = await tools.bash("echo $LATHE_TEST_GREETING", __user__=user_with_valves, __event_emitter__=mock_emitter)
+        R.check("greeting var with spaces works", "hello world" in r, r[:200])
+
+    async def t_tricky():
+        print("\n── bash: env vars with shell-tricky values ──")
+        class TrickyUserValves:
+            env_vars = '{"TRICKY":"it\'s a \\\"test\\\" with $HOME and `whoami`"}'
+        u = {**user, "valves": TrickyUserValves()}
+        r = await tools.bash("echo \"$TRICKY\"", __user__=u, __event_emitter__=mock_emitter)
+        R.check("tricky value not expanded", "$HOME" in r and "`whoami`" in r, r[:200])
+        R.check("quotes preserved in value", "\"test\"" in r, r[:200])
+
+    async def t_empty():
+        print("\n── bash: empty env vars no-op ──")
+        u = {**user, "valves": type("V", (), {"env_vars": "{}"})()}
+        r = await tools.bash("echo works", __user__=u, __event_emitter__=mock_emitter)
+        R.check("empty env vars still runs", "works" in r, r[:200])
+
+    async def t_no_valves():
+        print("\n── bash: no valves key no-op ──")
+        r = await tools.bash("echo still_works", __user__=user, __event_emitter__=mock_emitter)
+        R.check("no valves key still runs", "still_works" in r, r[:200])
+
+    await asyncio.gather(t_basic(), t_tricky(), t_empty(), t_no_valves())
+
+
+async def test_int_ensure_sandbox(R: Results, tools: Tools, user: dict):
     import httpx
     import json as _json
     from lathe import _headers, _ensure_sandbox
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-
         print("\n── _ensure_sandbox: identity ──")
-        # The test sandbox already exists from previous tests.
-        # Calling _ensure_sandbox for our test user should return the same one.
         sandbox_id = await _ensure_sandbox(tools.valves, TEST_EMAIL, emitter=mock_emitter)
-        check("returns a sandbox id", sandbox_id and isinstance(sandbox_id, str), repr(sandbox_id))
-
-        # Call again — must return the *same* sandbox, not create a new one
+        R.check("returns a sandbox id", sandbox_id and isinstance(sandbox_id, str), repr(sandbox_id))
         sandbox_id_2 = await _ensure_sandbox(tools.valves, TEST_EMAIL, emitter=mock_emitter)
-        check("same sandbox on repeat call", sandbox_id == sandbox_id_2,
-              f"{sandbox_id[:12]} != {sandbox_id_2[:12]}")
+        R.check("same sandbox on repeat call", sandbox_id == sandbox_id_2, f"{sandbox_id[:12]} != {sandbox_id_2[:12]}")
 
         print("\n── _ensure_sandbox: isolation ──")
-        # Query the API with our correct label filter — should return exactly 1
         resp = await client.get(
             f"{tools.valves.daytona_api_url}/sandbox",
             params={"labels": _json.dumps({"test-harness": TEST_EMAIL})},
@@ -612,14 +591,12 @@ async def run_tests():
         )
         resp.raise_for_status()
         filtered = resp.json() or []
-        check("label filter returns exactly 1", len(filtered) == 1,
-              f"got {len(filtered)}")
+        R.check("label filter returns exactly 1", len(filtered) == 1, f"got {len(filtered)}")
         if filtered:
-            check("filtered sandbox has correct label",
-                  filtered[0].get("labels", {}).get("test-harness") == TEST_EMAIL,
-                  str(filtered[0].get("labels", {})))
+            R.check("filtered sandbox has correct label",
+                     filtered[0].get("labels", {}).get("test-harness") == TEST_EMAIL,
+                     str(filtered[0].get("labels", {})))
 
-        # A different user must NOT see our sandbox
         resp = await client.get(
             f"{tools.valves.daytona_api_url}/sandbox",
             params={"labels": _json.dumps({"test-harness": "stranger@example.com"})},
@@ -627,22 +604,20 @@ async def run_tests():
         )
         resp.raise_for_status()
         stranger_results = resp.json() or []
-        check("stranger sees 0 sandboxes", len(stranger_results) == 0,
-              f"got {len(stranger_results)}")
+        R.check("stranger sees 0 sandboxes", len(stranger_results) == 0, f"got {len(stranger_results)}")
 
         print("\n── _ensure_sandbox: empty deployment_label guard ──")
         saved_label = tools.valves.deployment_label
         tools.valves.deployment_label = ""
         try:
             await _ensure_sandbox(tools.valves, TEST_EMAIL, emitter=mock_emitter)
-            check("empty label raises RuntimeError", False, "no exception raised")
+            R.check("empty label raises RuntimeError", False, "no exception raised")
         except RuntimeError as e:
-            check("empty label raises RuntimeError", "Deployment label" in str(e), str(e))
+            R.check("empty label raises RuntimeError", "Deployment label" in str(e), str(e))
         finally:
             tools.valves.deployment_label = saved_label
 
         print("\n── _ensure_sandbox: duplicate guard ──")
-        # Create a second sandbox with the same label to trigger the guard
         resp = await client.post(
             f"{tools.valves.daytona_api_url}/sandbox",
             headers=_headers(tools.valves),
@@ -656,19 +631,17 @@ async def run_tests():
             },
         )
         resp.raise_for_status()
-        duplicate_sandbox = resp.json()
-        duplicate_id = duplicate_sandbox["id"]
+        duplicate_id = resp.json()["id"]
         print(f"  Created duplicate sandbox {duplicate_id[:12]}...")
 
         try:
             await _ensure_sandbox(tools.valves, TEST_EMAIL, emitter=mock_emitter)
-            check("duplicate raises RuntimeError", False, "no exception raised")
+            R.check("duplicate raises RuntimeError", False, "no exception raised")
         except RuntimeError as e:
             msg = str(e)
-            check("duplicate raises RuntimeError", "Found 2 sandboxes" in msg, msg[:200])
-            check("duplicate error lists sandbox ids", duplicate_id[:12] in msg, msg[:200])
+            R.check("duplicate raises RuntimeError", "Found 2 sandboxes" in msg, msg[:200])
+            R.check("duplicate error lists sandbox ids", duplicate_id[:12] in msg, msg[:200])
 
-        # Clean up the duplicate
         print(f"  Deleting duplicate sandbox {duplicate_id[:12]}...")
         resp = await client.delete(
             f"{tools.valves.daytona_api_url}/sandbox/{duplicate_id}",
@@ -677,8 +650,6 @@ async def run_tests():
         )
         resp.raise_for_status()
 
-        # Poll until the delete propagates (API may lag briefly)
-        remaining = []
         for _attempt in range(15):
             await asyncio.sleep(1)
             resp = await client.get(
@@ -694,117 +665,18 @@ async def run_tests():
                 break
         print(f"  Deleted ({len(remaining)} sandbox(es) remain).")
 
-        # Confirm we're back to normal after cleanup
         sandbox_id_3 = await _ensure_sandbox(tools.valves, TEST_EMAIL, emitter=mock_emitter)
-        check("back to normal after dup cleanup", sandbox_id_3 == sandbox_id,
-              f"{sandbox_id_3[:12]} != {sandbox_id[:12]}")
+        R.check("back to normal after dup cleanup", sandbox_id_3 == sandbox_id, f"{sandbox_id_3[:12]} != {sandbox_id[:12]}")
 
-    # ── Test: _parse_env_vars unit tests ────────────────────────
-    from lathe import _parse_env_vars
 
-    print("\n── _parse_env_vars: valid JSON object ──")
-    pairs = _parse_env_vars('{"FOO":"bar","BAZ":"qux"}')
-    check("parses two pairs", len(pairs) == 2, f"got {len(pairs)}")
-    check("first key is FOO", pairs[0] == ("FOO", "bar"), str(pairs[0]))
-    check("second key is BAZ", pairs[1] == ("BAZ", "qux"), str(pairs[1]))
-
-    print("\n── _parse_env_vars: empty / default ──")
-    check("empty string returns []", _parse_env_vars("") == [], str(_parse_env_vars("")))
-    check("bare {} returns []", _parse_env_vars("{}") == [], str(_parse_env_vars("{}")))
-    check("whitespace only returns []", _parse_env_vars("   ") == [], str(_parse_env_vars("   ")))
-
-    print("\n── _parse_env_vars: values with special chars ──")
-    pairs = _parse_env_vars('{"KEY":"val=ue","OTHER":"has spaces","QUOTE":"it\'s"}')
-    check("value with = preserved", ("KEY", "val=ue") in pairs, str(pairs))
-    check("value with spaces preserved", ("OTHER", "has spaces") in pairs, str(pairs))
-    check("value with quote preserved", ("QUOTE", "it's") in pairs, str(pairs))
-
-    print("\n── _parse_env_vars: invalid keys skipped ──")
-    pairs = _parse_env_vars('{"GOOD":"yes","123bad":"no","also-bad":"no","_ok":"yes"}')
-    keys = [k for k, v in pairs]
-    check("GOOD accepted", "GOOD" in keys, str(keys))
-    check("_ok accepted", "_ok" in keys, str(keys))
-    check("123bad rejected", "123bad" not in keys, str(keys))
-    check("also-bad rejected", "also-bad" not in keys, str(keys))
-
-    print("\n── _parse_env_vars: non-string values skipped ──")
-    pairs = _parse_env_vars('{"A":"ok","B":123,"C":true}')
-    check("only string values kept", len(pairs) == 1 and pairs[0] == ("A", "ok"), str(pairs))
-
-    print("\n── _parse_env_vars: invalid JSON returns [] ──")
-    check("garbage returns []", _parse_env_vars("not json") == [], "")
-    check("array returns []", _parse_env_vars('["a","b"]') == [], "")
-
-    # ── Test: bash with UserValves env vars (integration) ────────
-    print("\n── bash: UserValves env vars injected ──")
-
-    class FakeUserValves:
-        env_vars = '{"LATHE_TEST_SECRET":"hunter2","LATHE_TEST_GREETING":"hello world"}'
-
-    user_with_valves = {
-        "email": TEST_EMAIL,
-        "id": "test-id",
-        "name": "Test User",
-        "valves": FakeUserValves(),
-    }
-
-    result = await tools.bash(
-        "echo $LATHE_TEST_SECRET",
-        __user__=user_with_valves, __event_emitter__=mock_emitter,
-    )
-    check("secret var is available", "hunter2" in result, result[:200])
-
-    result = await tools.bash(
-        "echo $LATHE_TEST_GREETING",
-        __user__=user_with_valves, __event_emitter__=mock_emitter,
-    )
-    check("greeting var with spaces works", "hello world" in result, result[:200])
-
-    print("\n── bash: env vars with shell-tricky values ──")
-
-    class TrickyUserValves:
-        env_vars = '{"TRICKY":"it\'s a \\\"test\\\" with $HOME and `whoami`"}'
-
-    user_tricky = {
-        "email": TEST_EMAIL,
-        "id": "test-id",
-        "name": "Test User",
-        "valves": TrickyUserValves(),
-    }
-
-    result = await tools.bash(
-        "echo \"$TRICKY\"",
-        __user__=user_tricky, __event_emitter__=mock_emitter,
-    )
-    check("tricky value not expanded", "$HOME" in result and "`whoami`" in result, result[:200])
-    check("quotes preserved in value", "\"test\"" in result, result[:200])
-
-    print("\n── bash: empty env vars no-op ──")
-    user_empty_valves = {
-        "email": TEST_EMAIL,
-        "id": "test-id",
-        "name": "Test User",
-        "valves": type("V", (), {"env_vars": "{}"})(),
-    }
-    result = await tools.bash("echo works", __user__=user_empty_valves, __event_emitter__=mock_emitter)
-    check("empty env vars still runs", "works" in result, result[:200])
-
-    print("\n── bash: no valves key no-op ──")
-    result = await tools.bash("echo still_works", __user__=user, __event_emitter__=mock_emitter)
-    check("no valves key still runs", "still_works" in result, result[:200])
-
-    # ── Cleanup ──────────────────────────────────────────────────
-    print("\n── cleanup ──")
-    await tools.bash("rm -rf workspace/test_file.txt workspace/dup_test.txt workspace/deep workspace/test_project workspace/attach_test.py workspace/attach_test.txt workspace/test_image.png workspace/test_image.svg workspace/test_archive.zip workspace/test_binary.dat /tmp/_bash_output_*.log", __user__=user, __event_emitter__=mock_emitter)
-
-    # ── Test 17: destroy ─────────────────────────────────────────
-    # Run this last — it deletes the sandbox, so nothing can run after it.
+async def test_int_destroy(R: Results, tools: Tools, user: dict):
 
     print("\n── destroy: wipes sandbox ──")
     result = await tools.destroy(__user__=user, __event_emitter__=mock_emitter)
-    check("destroy reports success", "Destroyed" in result and "1 sandbox" in result, result[:200])
+    R.check("destroy reports success", "Destroyed" in result and "1 sandbox" in result, result[:200])
 
-    # Verify sandbox is actually gone
+    import httpx, json as _json
+    from lathe import _headers
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(
             f"{tools.valves.daytona_api_url}/sandbox",
@@ -815,34 +687,139 @@ async def run_tests():
             s for s in (resp.json() or [])
             if s.get("labels", {}).get("test-harness") == TEST_EMAIL
         ]
-        check("sandbox gone after destroy", len(remaining) == 0, f"got {len(remaining)}")
+        R.check("sandbox gone after destroy", len(remaining) == 0, f"got {len(remaining)}")
 
     print("\n── destroy: no sandbox to destroy ──")
     result = await tools.destroy(__user__=user, __event_emitter__=mock_emitter)
-    check("destroy with nothing reports no sandbox", "No sandbox found" in result, result[:200])
+    R.check("destroy with nothing reports no sandbox", "No sandbox found" in result, result[:200])
 
     print("\n── destroy: next tool call creates fresh sandbox ──")
     result = await tools.bash("echo reborn", __user__=user, __event_emitter__=mock_emitter)
-    check("fresh sandbox works", "reborn" in result, result[:200])
+    R.check("fresh sandbox works", "reborn" in result, result[:200])
 
-    # Stop the fresh sandbox to conserve resources
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        sandboxes_resp = await client.get(
-            f"{tools.valves.daytona_api_url}/sandbox",
-            params={"labels": _json.dumps({"test-harness": TEST_EMAIL})},
-            headers=_headers(tools.valves),
-        )
-        for s in sandboxes_resp.json() or []:
-            print(f"  Stopping test sandbox {s['id'][:12]}...")
-            await client.post(
-                f"{tools.valves.daytona_api_url}/sandbox/{s['id']}/stop",
-                headers=_headers(tools.valves),
-            )
+    print("\n── final cleanup: destroy reborn sandbox ──")
+    result = await tools.destroy(__user__=user, __event_emitter__=mock_emitter)
+    R.check("final destroy succeeds", "Destroyed" in result, result[:200])
 
-    # ── Summary ──────────────────────────────────────────────────
+
+# ── Test group registry ──────────────────────────────────────────────
+
+UNIT_GROUPS = {
+    "parse_env_vars": test_unit_parse_env_vars,
+    "classify_file": test_unit_classify_file,
+    "render_html": test_unit_render_html,
+    "highlight": test_unit_highlight,
+    "truncate": test_unit_truncate,
+}
+
+INTEGRATION_GROUPS = {
+    "bash": test_int_bash,
+    "write_read_edit": test_int_write_read_edit,
+    "attach": test_int_attach,
+    "onboard": test_int_onboard,
+    "truncation": test_int_truncation,
+    "env_vars": test_int_env_vars,
+    "ensure_sandbox": test_int_ensure_sandbox,
+    "destroy": test_int_destroy,  # must run last among integration tests
+}
+
+ALL_GROUPS = {**UNIT_GROUPS, **INTEGRATION_GROUPS}
+
+
+async def run_tests():
+    args = sys.argv[1:]
+
+    if "--list" in args:
+        print("Unit groups (no sandbox):")
+        for name in UNIT_GROUPS:
+            print(f"  {name}")
+        print("\nIntegration groups (need sandbox + DAYTONA_API_KEY):")
+        for name in INTEGRATION_GROUPS:
+            print(f"  {name}")
+        print("\nSpecial selectors:")
+        print("  unit         — all unit tests")
+        print("  integration  — all integration tests")
+        return
+
+    # Resolve selectors
+    if not args:
+        selected = list(ALL_GROUPS.keys())
+    else:
+        selected = []
+        for arg in args:
+            if arg == "unit":
+                selected.extend(UNIT_GROUPS.keys())
+            elif arg == "integration":
+                selected.extend(INTEGRATION_GROUPS.keys())
+            elif arg in ALL_GROUPS:
+                selected.append(arg)
+            else:
+                print(f"Unknown group: {arg}. Use --list to see available groups.")
+                sys.exit(1)
+
+    # Deduplicate preserving order
+    seen = set()
+    selected = [g for g in selected if not (g in seen or seen.add(g))]
+
+    need_integration = any(g in INTEGRATION_GROUPS for g in selected)
+    if need_integration and not API_KEY:
+        print("Error: DAYTONA_API_KEY not set. Add it to .env or export it.")
+        print("(Run with 'unit' to skip integration tests.)")
+        sys.exit(1)
+
+    R = Results()
+    t0 = time.time()
+
+    # Run unit tests first
+    unit_selected = [g for g in selected if g in UNIT_GROUPS]
+    int_selected = [g for g in selected if g in INTEGRATION_GROUPS]
+
+    if unit_selected:
+        print(f"\n{'='*50}")
+        print(f"UNIT TESTS ({', '.join(unit_selected)})")
+        print(f"{'='*50}")
+        # Unit tests are instant — run them all concurrently
+        await asyncio.gather(*(UNIT_GROUPS[g](R) for g in unit_selected))
+
+        if R.failed > 0 and int_selected:
+            print(f"\n{R.failed} unit test(s) failed — skipping integration tests.")
+            int_selected = []
+
+    if int_selected:
+        print(f"\n{'='*50}")
+        print(f"INTEGRATION TESTS ({', '.join(int_selected)})")
+        print(f"{'='*50}")
+
+        # Shared tools + user across all integration tests
+        tools = Tools()
+        tools.valves.daytona_api_key = API_KEY
+        tools.valves.deployment_label = "test-harness"
+        user = {"email": TEST_EMAIL, "id": "test-id", "name": "Test User"}
+
+        # Pre-warm: create/start sandbox once before fanning out
+        from lathe import _ensure_sandbox
+        print("\n── pre-warm: ensuring sandbox is ready ──")
+        await _ensure_sandbox(tools.valves, TEST_EMAIL, emitter=mock_emitter)
+
+        # Integration tests that are independent can run concurrently,
+        # but destroy must run last and ensure_sandbox has side effects.
+        # Group into: concurrent batch + sequential tail.
+        concurrent = [g for g in int_selected if g not in ("destroy", "ensure_sandbox")]
+        sequential = [g for g in int_selected if g in ("ensure_sandbox",)]
+        tail = [g for g in int_selected if g == "destroy"]
+
+        if concurrent:
+            await asyncio.gather(*(INTEGRATION_GROUPS[g](R, tools, user) for g in concurrent))
+        for g in sequential:
+            await INTEGRATION_GROUPS[g](R, tools, user)
+        for g in tail:
+            await INTEGRATION_GROUPS[g](R, tools, user)
+
+    elapsed = time.time() - t0
+    total = R.passed + R.failed
     print(f"\n{'='*50}")
-    print(f"Results: {passed} passed, {failed} failed out of {passed + failed}")
-    if failed:
+    print(f"Results: {R.passed} passed, {R.failed} failed out of {total}  ({elapsed:.1f}s)")
+    if R.failed:
         print("SOME TESTS FAILED")
         sys.exit(1)
     else:

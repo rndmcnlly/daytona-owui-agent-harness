@@ -50,12 +50,12 @@ After the control plane reports `state=started`, a readiness probe (`echo ready`
 
 ### Key implementation details
 
-- **Command execution**: The sandbox provider's `/process/execute` does argv splitting, not shell invocation. To avoid quoting/escaping issues, the `bash` tool writes the command verbatim to a temp script (`/tmp/_cmd.sh`) and executes `bash /tmp/_cmd.sh`. The model's command reaches bash with zero transformations.
+- **Command execution**: The sandbox provider's `/process/execute` does argv splitting, not shell invocation. To avoid quoting/escaping issues, the `bash` tool writes the command verbatim to a unique temp script (`/tmp/_cmd_{hash}.sh`) and executes `bash /tmp/_cmd_{hash}.sh`. The model's command reaches bash with zero transformations. Each invocation gets a distinct file path (keyed on command content + timestamp) so concurrent calls to the same sandbox cannot clobber each other.
 - **Output truncation**: Inspired by [Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent)'s bash tool design. Output is truncated to the **last** 2000 lines or 50 KB (whichever limit is hit first), keeping the tail where errors and final results live. If truncated, the full output is uploaded to a temp file in the sandbox (`/tmp/_bash_output_{hash}.log`) and the model sees a notice like `[Showing lines 1842-2000 of 5400. Full output: /tmp/_bash_output_abc12345.log]`. The model can then use `read()` or `bash("head -n 100 /tmp/...")` to inspect earlier parts without re-running the command. This prevents verbose commands like `pip install` or `find /` from flooding the context window.
 - **Error handling**: Scripts run with `set -e -o pipefail` so failures abort immediately and pipe errors propagate. Models can override with `|| true` when intentional.
 - **Non-interactive environment**: Every bash command runs with `DEBIAN_FRONTEND=noninteractive GIT_TERMINAL_PROMPT=0 PIP_NO_INPUT=1 NPM_CONFIG_YES=true CI=true` exported to prevent blocking on interactive prompts.
 - **Helper visibility**: OWUI exposes all non-`__dunder__` methods on `class Tools` as callable tools. All helpers are module-level functions to stay invisible to tool discovery.
-- **Onboard script**: The `onboard` tool uploads a shell script to `/tmp/_onboard.sh` and executes it, using the same tempfile pattern as `bash`. The script parses YAML frontmatter line-by-line in bash.
+- **Onboard script**: The `onboard` tool uploads a shell script to `/tmp/_onboard_{hash}.sh` and executes it, using the same unique-tempfile pattern as `bash`. The script parses YAML frontmatter line-by-line in bash.
 - **Browser-side execution**: The `ingest` tool uses OWUI's `__event_call__` mechanism to inject and run JavaScript in the user's browser tab. This is the same pattern used by the [picker-agent](https://github.com/rndmcnlly/picker-agent) toolkits. The JS renders a modal, the user interacts with it, and structured data flows back to Python.
 
 ### Agent Skills support
@@ -153,13 +153,25 @@ Deploy as tool ID `lathe` on any Open WebUI instance:
 # Then POST valves to /api/v1/tools/id/lathe/valves/update
 ```
 
+A gitignored `.env` file is expected at the repo root with credentials used for testing and deployment:
+
+```
+DAYTONA_API_KEY=dtn_...              # sandbox provider API key (used by test harness)
+YOUR_OWUI_INSTANCE_TOKEN=eyJ...      # OWUI JWT for the target server (used to deploy via admin API)
+```
+
 ## Testing
 
 ```bash
-uv run --script test_harness.py
+uv run --script test_harness.py              # run everything
+uv run --script test_harness.py unit         # unit tests only (no sandbox, ~0.1s)
+uv run --script test_harness.py bash env_vars  # specific groups only
+uv run --script test_harness.py --list       # list available groups
 ```
 
-Requires `DAYTONA_API_KEY` in a `.env` file or exported as an environment variable. Creates a sandbox labeled `test-harness`, runs tests across all server-side tools (including attach modes for text, images, and binary files), stops the sandbox on completion.
+Requires `DAYTONA_API_KEY` in a `.env` file or exported as an environment variable (not needed for `unit`). Creates a sandbox labeled `test-harness`, runs tests across all server-side tools (including attach modes for text, images, and binary files), destroys the sandbox on completion.
+
+Unit tests (pure-function tests for `_parse_env_vars`, `_classify_file`, `_render_*_html`, `_highlight_code`, `_truncate_tail`) run first and gate integration tests — if a unit test fails, integration tests are skipped. Independent integration test groups and independent tool calls within groups run concurrently via `asyncio.gather()`.
 
 ### Manual testing: `ingest`
 
