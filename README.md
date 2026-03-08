@@ -126,6 +126,14 @@ When the model calls `ingest(prompt)`, the tool:
 | `auto_archive_minutes` | `60` | Minutes after stop before archive |
 | `sandbox_language` | `python` | Default runtime |
 
+### UserValves (per-user configuration)
+
+| Valve | Default | Purpose |
+|-------|---------|---------|
+| `env_vars` | `{}` (password field) | JSON object of environment variables injected into every `bash` command. e.g. `{"GITHUB_TOKEN":"ghp_...","OPENAI_API_KEY":"sk-..."}` |
+
+Environment variables are `export`-ed in the bash script preamble with values single-quoted to prevent shell expansion. This pairs well with user system prompts that mention variable names without values, reducing credential exposure to the model.
+
 ### Sandbox provider API surface used
 
 - **Control plane** (`app.daytona.io/api`): `GET /sandbox`, `POST /sandbox`, `POST /sandbox/{id}/start`, `POST /sandbox/{id}/stop`, `POST /sandbox/{id}/recover`

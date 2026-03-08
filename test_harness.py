@@ -699,6 +699,100 @@ async def run_tests():
         check("back to normal after dup cleanup", sandbox_id_3 == sandbox_id,
               f"{sandbox_id_3[:12]} != {sandbox_id[:12]}")
 
+    # ── Test: _parse_env_vars unit tests ────────────────────────
+    from lathe import _parse_env_vars
+
+    print("\n── _parse_env_vars: valid JSON object ──")
+    pairs = _parse_env_vars('{"FOO":"bar","BAZ":"qux"}')
+    check("parses two pairs", len(pairs) == 2, f"got {len(pairs)}")
+    check("first key is FOO", pairs[0] == ("FOO", "bar"), str(pairs[0]))
+    check("second key is BAZ", pairs[1] == ("BAZ", "qux"), str(pairs[1]))
+
+    print("\n── _parse_env_vars: empty / default ──")
+    check("empty string returns []", _parse_env_vars("") == [], str(_parse_env_vars("")))
+    check("bare {} returns []", _parse_env_vars("{}") == [], str(_parse_env_vars("{}")))
+    check("whitespace only returns []", _parse_env_vars("   ") == [], str(_parse_env_vars("   ")))
+
+    print("\n── _parse_env_vars: values with special chars ──")
+    pairs = _parse_env_vars('{"KEY":"val=ue","OTHER":"has spaces","QUOTE":"it\'s"}')
+    check("value with = preserved", ("KEY", "val=ue") in pairs, str(pairs))
+    check("value with spaces preserved", ("OTHER", "has spaces") in pairs, str(pairs))
+    check("value with quote preserved", ("QUOTE", "it's") in pairs, str(pairs))
+
+    print("\n── _parse_env_vars: invalid keys skipped ──")
+    pairs = _parse_env_vars('{"GOOD":"yes","123bad":"no","also-bad":"no","_ok":"yes"}')
+    keys = [k for k, v in pairs]
+    check("GOOD accepted", "GOOD" in keys, str(keys))
+    check("_ok accepted", "_ok" in keys, str(keys))
+    check("123bad rejected", "123bad" not in keys, str(keys))
+    check("also-bad rejected", "also-bad" not in keys, str(keys))
+
+    print("\n── _parse_env_vars: non-string values skipped ──")
+    pairs = _parse_env_vars('{"A":"ok","B":123,"C":true}')
+    check("only string values kept", len(pairs) == 1 and pairs[0] == ("A", "ok"), str(pairs))
+
+    print("\n── _parse_env_vars: invalid JSON returns [] ──")
+    check("garbage returns []", _parse_env_vars("not json") == [], "")
+    check("array returns []", _parse_env_vars('["a","b"]') == [], "")
+
+    # ── Test: bash with UserValves env vars (integration) ────────
+    print("\n── bash: UserValves env vars injected ──")
+
+    class FakeUserValves:
+        env_vars = '{"LATHE_TEST_SECRET":"hunter2","LATHE_TEST_GREETING":"hello world"}'
+
+    user_with_valves = {
+        "email": TEST_EMAIL,
+        "id": "test-id",
+        "name": "Test User",
+        "valves": FakeUserValves(),
+    }
+
+    result = await tools.bash(
+        "echo $LATHE_TEST_SECRET",
+        __user__=user_with_valves, __event_emitter__=mock_emitter,
+    )
+    check("secret var is available", "hunter2" in result, result[:200])
+
+    result = await tools.bash(
+        "echo $LATHE_TEST_GREETING",
+        __user__=user_with_valves, __event_emitter__=mock_emitter,
+    )
+    check("greeting var with spaces works", "hello world" in result, result[:200])
+
+    print("\n── bash: env vars with shell-tricky values ──")
+
+    class TrickyUserValves:
+        env_vars = '{"TRICKY":"it\'s a \\\"test\\\" with $HOME and `whoami`"}'
+
+    user_tricky = {
+        "email": TEST_EMAIL,
+        "id": "test-id",
+        "name": "Test User",
+        "valves": TrickyUserValves(),
+    }
+
+    result = await tools.bash(
+        "echo \"$TRICKY\"",
+        __user__=user_tricky, __event_emitter__=mock_emitter,
+    )
+    check("tricky value not expanded", "$HOME" in result and "`whoami`" in result, result[:200])
+    check("quotes preserved in value", "\"test\"" in result, result[:200])
+
+    print("\n── bash: empty env vars no-op ──")
+    user_empty_valves = {
+        "email": TEST_EMAIL,
+        "id": "test-id",
+        "name": "Test User",
+        "valves": type("V", (), {"env_vars": "{}"})(),
+    }
+    result = await tools.bash("echo works", __user__=user_empty_valves, __event_emitter__=mock_emitter)
+    check("empty env vars still runs", "works" in result, result[:200])
+
+    print("\n── bash: no valves key no-op ──")
+    result = await tools.bash("echo still_works", __user__=user, __event_emitter__=mock_emitter)
+    check("no valves key still runs", "still_works" in result, result[:200])
+
     # ── Cleanup ──────────────────────────────────────────────────
     print("\n── cleanup ──")
     await tools.bash("rm -rf workspace/test_file.txt workspace/dup_test.txt workspace/deep workspace/test_project workspace/attach_test.py workspace/attach_test.txt workspace/test_image.png workspace/test_image.svg workspace/test_archive.zip workspace/test_binary.dat /tmp/_bash_output_*.log", __user__=user, __event_emitter__=mock_emitter)

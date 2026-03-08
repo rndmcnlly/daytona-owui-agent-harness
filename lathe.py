@@ -55,6 +55,34 @@ def _shell_quote(s: str) -> str:
     return "'" + s.replace("'", "'\\''") + "'"
 
 
+def _parse_env_vars(env_vars: str) -> list[tuple[str, str]]:
+    """Parse a JSON object string into (key, value) pairs.
+
+    Expects a JSON object mapping string keys to string values,
+    e.g. '{"MY_TOKEN":"abc123","FOO":"bar"}'.
+    Keys must match [A-Za-z_][A-Za-z0-9_]*; invalid keys are skipped.
+    Returns [] on empty input or parse error.
+    """
+    import re
+    s = env_vars.strip()
+    if not s or s == "{}":
+        return []
+    try:
+        mapping = json.loads(s)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(mapping, dict):
+        return []
+    pairs: list[tuple[str, str]] = []
+    for key, value in mapping.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            continue
+        pairs.append((key, value))
+    return pairs
+
+
 def _get_email(user: dict) -> str:
     email = user.get("email", "")
     if not email:
@@ -582,6 +610,18 @@ class Tools:
             description="Default language runtime (python, typescript, javascript)",
         )
 
+    class UserValves(BaseModel):
+        env_vars: str = Field(
+            "{}",
+            description=(
+                'Environment variables injected into every bash command. '
+                'JSON object mapping variable names to values, e.g. {"MY_TOKEN":"abc123","FOO":"bar"}. '
+                "Values are shell-quoted before injection and never shown to the model."
+            ),
+            json_schema_extra={"input": {"type": "password"}},
+        )
+        pass
+
     def __init__(self):
         self.valves = self.Valves()
 
@@ -795,6 +835,8 @@ class Tools:
         Output is truncated to the last 2000 lines or 50 KB (whichever limit is hit first).
         If truncated, the full output is saved to a file in /tmp/ and the path is shown.
         Use read() or another bash command to inspect specific parts of that file.
+        User-configured environment variables (set via the UserValves env_vars JSON field) are
+        automatically injected into every command — reference them by name without exposing values.
         :param command: The bash command to execute.
         :param workdir: Working directory for the command (default: /home/daytona/workspace).
         """
@@ -808,6 +850,22 @@ class Tools:
             # command exactly as provided.  Writing to a temp file avoids all
             # quoting/escaping issues with the Daytona execute API's argv
             # splitting — the command reaches bash with zero transformations.
+
+            # Collect user-supplied env vars from UserValves (never logged).
+            user_valves = __user__.get("valves")
+            user_env_lines = ""
+            if user_valves:
+                raw_env = getattr(user_valves, "env_vars", "") or ""
+                pairs = _parse_env_vars(raw_env)
+                if pairs:
+                    user_env_lines = (
+                        "# user env vars\n"
+                        + "".join(
+                            f"export {k}={_shell_quote(v)}\n"
+                            for k, v in pairs
+                        )
+                    )
+
             script = (
                 "#!/usr/bin/env bash\n"
                 "set -e -o pipefail\n"
@@ -816,6 +874,7 @@ class Tools:
                 "PIP_NO_INPUT=1 "
                 "NPM_CONFIG_YES=true "
                 "CI=true\n"
+                + user_env_lines
                 + command
                 + "\n"
             )
