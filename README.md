@@ -11,7 +11,7 @@ The model calls tools that look like a local coding agent (inspired by [Pi](http
 ### Sandbox identity
 
 - **One sandbox per OWUI user**, identified by email address.
-- **Label**: `{deployment_label}:{email}` (e.g. `chat.example.com:user@example.com`) for API lookup via `GET /sandbox?label=...`.
+- **Label**: `{deployment_label: email}` as a JSON-encoded labels dict (e.g. `{"chat.example.com": "user@example.com"}`) for API lookup via `GET /sandbox?labels=...`.
 - **Name**: `{deployment_label}/{email}` for human readability on the provider dashboard.
 - Sandboxes are never deleted (`autoDeleteInterval: -1`). They stop after idle (default 15 min) and archive after stop (default 60 min).
 
@@ -20,9 +20,13 @@ The model calls tools that look like a local coding agent (inspired by [Pi](http
 Called at the top of every tool method. Transparent to the model.
 
 ```
-GET /sandbox?label={deployment_label}:{email}
+GET /sandbox?labels={"deployment_label": "email"}
   |
-  +-- not found --> POST /sandbox (create, wait for started)
+  +-- 0 matches --> POST /sandbox (create, wait for started)
+  +-- 1 match   --> readiness probe / start / recover as needed
+  +-- 2+ matches -> RuntimeError (admin must clean up duplicates)
+
+State handling for the matched sandbox:
   +-- started   --> readiness probe, return
   +-- stopped   --> POST /start, poll until started
   +-- archived  --> POST /start, poll until started (slower)

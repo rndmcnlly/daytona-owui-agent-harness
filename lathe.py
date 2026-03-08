@@ -432,22 +432,35 @@ async def _ensure_sandbox(valves, email: str, emitter=None) -> str:
             "Daytona API key not configured. Ask an admin to set it in Tool settings."
         )
 
+    if not valves.deployment_label:
+        raise RuntimeError(
+            "Deployment label not configured. Ask an admin to set it in Tool settings."
+        )
+
     label_key = valves.deployment_label
-    label_filter = f"{label_key}:{email}"
+    labels_filter = json.dumps({label_key: email})
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         # 1. Look up existing sandbox by label
         resp = await client.get(
             _api(valves, "/sandbox"),
-            params={"label": label_filter},
+            params={"labels": labels_filter},
             headers=_headers(valves),
         )
         resp.raise_for_status()
-        sandboxes = resp.json()
+        sandboxes = resp.json() or []
 
-        sandbox = None
-        if sandboxes:
-            sandbox = sandboxes[0]
+        matches = [s for s in sandboxes if s.get("labels", {}).get(label_key) == email]
+
+        if len(matches) > 1:
+            ids = ", ".join(s["id"] for s in matches)
+            raise RuntimeError(
+                f"Found {len(matches)} sandboxes labelled {label_key}={email} ({ids}). "
+                f"Expected at most 1. Please delete the extras in the Daytona dashboard "
+                f"and try again."
+            )
+
+        sandbox = matches[0] if matches else None
 
         if sandbox is None:
             # 2. Create new sandbox

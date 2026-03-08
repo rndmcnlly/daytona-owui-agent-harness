@@ -585,20 +585,132 @@ async def run_tests():
     result = await tools.bash("echo hello", __user__=user, __event_emitter__=mock_emitter)
     check("small output has no truncation notice", "[Showing lines" not in result, result[:200])
 
+    # ── Test 16: _ensure_sandbox label filtering ─────────────────
+    import httpx
+    import json as _json
+    from lathe import _headers, _ensure_sandbox
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+
+        print("\n── _ensure_sandbox: identity ──")
+        # The test sandbox already exists from previous tests.
+        # Calling _ensure_sandbox for our test user should return the same one.
+        sandbox_id = await _ensure_sandbox(tools.valves, TEST_EMAIL, emitter=mock_emitter)
+        check("returns a sandbox id", sandbox_id and isinstance(sandbox_id, str), repr(sandbox_id))
+
+        # Call again — must return the *same* sandbox, not create a new one
+        sandbox_id_2 = await _ensure_sandbox(tools.valves, TEST_EMAIL, emitter=mock_emitter)
+        check("same sandbox on repeat call", sandbox_id == sandbox_id_2,
+              f"{sandbox_id[:12]} != {sandbox_id_2[:12]}")
+
+        print("\n── _ensure_sandbox: isolation ──")
+        # Query the API with our correct label filter — should return exactly 1
+        resp = await client.get(
+            f"{tools.valves.daytona_api_url}/sandbox",
+            params={"labels": _json.dumps({"test-harness": TEST_EMAIL})},
+            headers=_headers(tools.valves),
+        )
+        resp.raise_for_status()
+        filtered = resp.json() or []
+        check("label filter returns exactly 1", len(filtered) == 1,
+              f"got {len(filtered)}")
+        if filtered:
+            check("filtered sandbox has correct label",
+                  filtered[0].get("labels", {}).get("test-harness") == TEST_EMAIL,
+                  str(filtered[0].get("labels", {})))
+
+        # A different user must NOT see our sandbox
+        resp = await client.get(
+            f"{tools.valves.daytona_api_url}/sandbox",
+            params={"labels": _json.dumps({"test-harness": "stranger@example.com"})},
+            headers=_headers(tools.valves),
+        )
+        resp.raise_for_status()
+        stranger_results = resp.json() or []
+        check("stranger sees 0 sandboxes", len(stranger_results) == 0,
+              f"got {len(stranger_results)}")
+
+        print("\n── _ensure_sandbox: empty deployment_label guard ──")
+        saved_label = tools.valves.deployment_label
+        tools.valves.deployment_label = ""
+        try:
+            await _ensure_sandbox(tools.valves, TEST_EMAIL, emitter=mock_emitter)
+            check("empty label raises RuntimeError", False, "no exception raised")
+        except RuntimeError as e:
+            check("empty label raises RuntimeError", "Deployment label" in str(e), str(e))
+        finally:
+            tools.valves.deployment_label = saved_label
+
+        print("\n── _ensure_sandbox: duplicate guard ──")
+        # Create a second sandbox with the same label to trigger the guard
+        resp = await client.post(
+            f"{tools.valves.daytona_api_url}/sandbox",
+            headers=_headers(tools.valves),
+            json={
+                "language": tools.valves.sandbox_language,
+                "name": f"test-harness/{TEST_EMAIL}-duplicate",
+                "labels": {"test-harness": TEST_EMAIL},
+                "autoStopInterval": tools.valves.auto_stop_minutes,
+                "autoArchiveInterval": tools.valves.auto_archive_minutes,
+                "autoDeleteInterval": -1,
+            },
+        )
+        resp.raise_for_status()
+        duplicate_sandbox = resp.json()
+        duplicate_id = duplicate_sandbox["id"]
+        print(f"  Created duplicate sandbox {duplicate_id[:12]}...")
+
+        try:
+            await _ensure_sandbox(tools.valves, TEST_EMAIL, emitter=mock_emitter)
+            check("duplicate raises RuntimeError", False, "no exception raised")
+        except RuntimeError as e:
+            msg = str(e)
+            check("duplicate raises RuntimeError", "Found 2 sandboxes" in msg, msg[:200])
+            check("duplicate error lists sandbox ids", duplicate_id[:12] in msg, msg[:200])
+
+        # Clean up the duplicate
+        print(f"  Deleting duplicate sandbox {duplicate_id[:12]}...")
+        resp = await client.delete(
+            f"{tools.valves.daytona_api_url}/sandbox/{duplicate_id}",
+            headers=_headers(tools.valves),
+            params={"force": "true"},
+        )
+        resp.raise_for_status()
+
+        # Poll until the delete propagates (API may lag briefly)
+        remaining = []
+        for _attempt in range(15):
+            await asyncio.sleep(1)
+            resp = await client.get(
+                f"{tools.valves.daytona_api_url}/sandbox",
+                params={"labels": _json.dumps({"test-harness": TEST_EMAIL})},
+                headers=_headers(tools.valves),
+            )
+            remaining = [
+                s for s in (resp.json() or [])
+                if s.get("labels", {}).get("test-harness") == TEST_EMAIL
+            ]
+            if len(remaining) <= 1:
+                break
+        print(f"  Deleted ({len(remaining)} sandbox(es) remain).")
+
+        # Confirm we're back to normal after cleanup
+        sandbox_id_3 = await _ensure_sandbox(tools.valves, TEST_EMAIL, emitter=mock_emitter)
+        check("back to normal after dup cleanup", sandbox_id_3 == sandbox_id,
+              f"{sandbox_id_3[:12]} != {sandbox_id[:12]}")
+
     # ── Cleanup ──────────────────────────────────────────────────
     print("\n── cleanup ──")
     await tools.bash("rm -rf workspace/test_file.txt workspace/dup_test.txt workspace/deep workspace/test_project workspace/attach_test.py workspace/attach_test.txt workspace/test_image.png workspace/test_image.svg workspace/test_archive.zip workspace/test_binary.dat /tmp/_bash_output_*.log", __user__=user, __event_emitter__=mock_emitter)
 
     # Stop the sandbox to conserve resources
-    import httpx
-    from lathe import _headers
     async with httpx.AsyncClient(timeout=30.0) as client:
         sandboxes_resp = await client.get(
             f"{tools.valves.daytona_api_url}/sandbox",
-            params={"label": f"test-harness:{TEST_EMAIL}"},
+            params={"labels": _json.dumps({"test-harness": TEST_EMAIL})},
             headers=_headers(tools.valves),
         )
-        for s in sandboxes_resp.json():
+        for s in sandboxes_resp.json() or []:
             print(f"  Stopping test sandbox {s['id'][:12]}...")
             await client.post(
                 f"{tools.valves.daytona_api_url}/sandbox/{s['id']}/stop",
