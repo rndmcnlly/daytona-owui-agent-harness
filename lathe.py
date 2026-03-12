@@ -5,7 +5,7 @@ author_url: https://adamsmith.as
 description: Coding agent tools (bash, read, write, edit, attach, ingest, onboard, preview) backed by per-user sandbox VMs with transparent lifecycle management.
 required_open_webui_version: 0.4.0
 requirements: httpx
-version: 0.5.0
+version: 0.6.0
 licence: MIT
 """
 
@@ -1324,11 +1324,12 @@ class Tools:
         __event_call__=None,
     ) -> str:
         """
-        Ask the user to upload a file from their local machine into the sandbox.
-        The file goes directly to the sandbox filesystem — it does not enter the
-        conversation context or the OWUI database. Use read() afterward if you
-        need to inspect the file contents yourself.
-        :param prompt: Optional message shown to the user explaining what file is needed, e.g. "Upload your CSV dataset".
+        Ask the user to provide content for the sandbox — either by uploading
+        a file from their local machine or by pasting text directly.  The
+        content goes straight to the sandbox filesystem without entering the
+        conversation context or the OWUI database.  Use read() afterward if
+        you need to inspect the contents yourself.
+        :param prompt: Optional message shown to the user explaining what is needed, e.g. "Upload your CSV dataset" or "Paste your configuration".
         """
         async def _run():
             email = _get_email(__user__)
@@ -1338,15 +1339,17 @@ class Tools:
                 return "Error: ingest requires browser-side execution (__event_call__). Ensure the toolkit is used in Native function calling mode."
 
             # Build the prompt text for the modal
-            prompt_text = prompt if prompt else "The assistant is asking for a file."
+            prompt_text = prompt if prompt else "The assistant is asking for a file or text."
             prompt_js = json.dumps(prompt_text)
 
             # Max file size (25 MB)
             max_bytes = 25 * 1024 * 1024
 
-            # The JS picks a file, uploads it to OWUI's Files API from the
-            # browser (normal HTTP POST with XHR for progress), and returns
-            # only the small file ID + metadata through __event_call__.
+            # The JS presents two stacked sections: a file picker/drop zone
+            # on top and a paste-text area below.  Whichever the user fills
+            # in gets uploaded to OWUI's Files API from the browser (normal
+            # HTTP POST with XHR for progress).  Only the small file ID +
+            # metadata flows back through __event_call__.
             js = f"""
 const promptText = {prompt_js};
 const maxBytes = {max_bytes};
@@ -1362,10 +1365,10 @@ return await new Promise((resolve) => {{
     card.style.cssText =
         "background:#1e1e2e;border-radius:12px;padding:32px 40px;" +
         "text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.5);" +
-        "font-family:system-ui,sans-serif;color:#cdd6f4;max-width:480px";
+        "font-family:system-ui,sans-serif;color:#cdd6f4;max-width:520px;width:90vw";
 
     const title = document.createElement("h3");
-    title.textContent = "Upload File to Sandbox";
+    title.textContent = "Upload to Sandbox";
     title.style.cssText = "margin:0 0 8px;font-size:18px;color:#f5e0dc";
 
     const desc = document.createElement("p");
@@ -1390,28 +1393,9 @@ return await new Promise((resolve) => {{
     input.type = "file";
     input.style.display = "none";
 
-    const chooseBtn = document.createElement("button");
-    chooseBtn.textContent = "Choose File\\u2026";
-    chooseBtn.style.cssText =
-        "padding:10px 28px;font-size:15px;border:none;border-radius:8px;" +
-        "background:#89b4fa;color:#1e1e2e;cursor:pointer;font-weight:600;" +
-        "white-space:nowrap";
-
-    const uploadBtn = document.createElement("button");
-    uploadBtn.textContent = "Upload";
-    uploadBtn.style.cssText =
-        "padding:10px 28px;font-size:15px;border:none;border-radius:8px;" +
-        "background:#a6e3a1;color:#1e1e2e;cursor:pointer;font-weight:600;" +
-        "white-space:nowrap;display:none";
-
-    const cancel = document.createElement("button");
-    cancel.textContent = "Cancel";
-    cancel.style.cssText =
-        "padding:10px 28px;font-size:14px;border:1px solid #585b70;" +
-        "border-radius:8px;background:transparent;color:#a6adc8;" +
-        "cursor:pointer;white-space:nowrap";
-
-    let selectedFile = null;
+    // ── shared state ──
+    let selectedFile = null;   // File object (from picker or drop)
+    let mode = null;           // "file" | "text"
 
     function humanSize(n) {{
         if (n < 1024) return n + " B";
@@ -1419,22 +1403,48 @@ return await new Promise((resolve) => {{
         return (n / 1024 / 1024).toFixed(1) + " MB";
     }}
 
+    function updateUploadBtn() {{
+        if (mode === "file" && selectedFile && selectedFile.size <= maxBytes) {{
+            uploadBtn.style.display = "inline-block";
+        }} else if (mode === "text" && pasteArea.value.trim().length > 0) {{
+            uploadBtn.style.display = "inline-block";
+        }} else {{
+            uploadBtn.style.display = "none";
+        }}
+    }}
+
     function selectFile(file) {{
         selectedFile = file;
+        mode = "file";
+        // clear text section when a file is chosen
+        pasteArea.value = "";
+        pasteArea.style.borderColor = "#45475a";
         if (selectedFile.size > maxBytes) {{
             fileInfo.textContent = selectedFile.name + " (" + humanSize(selectedFile.size) + ") \\u2014 too large (max 25 MB)";
             fileInfo.style.color = "#f38ba8";
-            uploadBtn.style.display = "none";
         }} else {{
             fileInfo.textContent = selectedFile.name + " (" + humanSize(selectedFile.size) + ")";
             fileInfo.style.color = "#a6e3a1";
-            uploadBtn.style.display = "inline-block";
         }}
+        updateUploadBtn();
     }}
 
     input.onchange = () => {{
         if (input.files && input.files.length > 0) selectFile(input.files[0]);
     }};
+
+    // ── file section: choose button + drop zone ──
+    const chooseBtn = document.createElement("button");
+    chooseBtn.textContent = "Choose File\\u2026";
+    chooseBtn.style.cssText =
+        "padding:10px 28px;font-size:15px;border:none;border-radius:8px;" +
+        "background:#89b4fa;color:#1e1e2e;cursor:pointer;font-weight:600;" +
+        "white-space:nowrap";
+    chooseBtn.onclick = () => input.click();
+
+    const dropHint = document.createElement("p");
+    dropHint.textContent = "or drop a file onto this dialog";
+    dropHint.style.cssText = "margin:8px 0 0;font-size:12px;color:#585b70;font-style:italic";
 
     // Drag-and-drop: make the whole card a drop target
     let dragCounter = 0;
@@ -1464,25 +1474,97 @@ return await new Promise((resolve) => {{
         }}
     }});
 
-    const dropHint = document.createElement("p");
-    dropHint.textContent = "or drop a file onto this dialog";
-    dropHint.style.cssText = "margin:14px 0 0;font-size:12px;color:#585b70;font-style:italic";
+    // ── divider ──
+    const divider = document.createElement("div");
+    divider.style.cssText =
+        "display:flex;align-items:center;gap:12px;margin:20px 0";
+    const line1 = document.createElement("div");
+    line1.style.cssText = "flex:1;height:1px;background:#45475a";
+    const orText = document.createElement("span");
+    orText.textContent = "or paste text";
+    orText.style.cssText = "font-size:12px;color:#585b70;white-space:nowrap";
+    const line2 = document.createElement("div");
+    line2.style.cssText = "flex:1;height:1px;background:#45475a";
+    divider.appendChild(line1);
+    divider.appendChild(orText);
+    divider.appendChild(line2);
 
-    chooseBtn.onclick = () => input.click();
+    // ── text section: textarea + filename field ──
+    const pasteArea = document.createElement("textarea");
+    pasteArea.placeholder = "Paste or type content here\\u2026";
+    pasteArea.style.cssText =
+        "width:100%;min-height:100px;max-height:240px;padding:10px 12px;font-size:13px;" +
+        "font-family:'SF Mono',ui-monospace,monospace;background:#181825;color:#cdd6f4;" +
+        "border:1px solid #45475a;border-radius:8px;resize:vertical;" +
+        "box-sizing:border-box;outline:none";
+    pasteArea.addEventListener("focus", () => {{
+        pasteArea.style.borderColor = "#89b4fa";
+    }});
+    pasteArea.addEventListener("blur", () => {{
+        pasteArea.style.borderColor = "#45475a";
+    }});
+    pasteArea.addEventListener("input", () => {{
+        if (pasteArea.value.trim().length > 0) {{
+            mode = "text";
+            // clear file selection when text is typed
+            selectedFile = null;
+            fileInfo.textContent = "";
+        }} else if (mode === "text") {{
+            mode = null;
+        }}
+        updateUploadBtn();
+    }});
 
-    uploadBtn.onclick = () => {{
-        if (!selectedFile) return;
+    // Filename row
+    const fnRow = document.createElement("div");
+    fnRow.style.cssText =
+        "display:flex;align-items:center;gap:8px;margin-top:8px";
+    const fnLabel = document.createElement("span");
+    fnLabel.textContent = "Save as:";
+    fnLabel.style.cssText = "font-size:12px;color:#a6adc8;white-space:nowrap";
+    const fnInput = document.createElement("input");
+    fnInput.type = "text";
+    fnInput.value = "pasted.txt";
+    fnInput.style.cssText =
+        "flex:1;padding:6px 10px;font-size:13px;" +
+        "font-family:'SF Mono',ui-monospace,monospace;background:#181825;color:#cdd6f4;" +
+        "border:1px solid #45475a;border-radius:6px;outline:none;box-sizing:border-box";
+    fnInput.addEventListener("focus", () => {{ fnInput.style.borderColor = "#89b4fa"; }});
+    fnInput.addEventListener("blur", () => {{ fnInput.style.borderColor = "#45475a"; }});
+    fnRow.appendChild(fnLabel);
+    fnRow.appendChild(fnInput);
+
+    // ── action buttons ──
+    const uploadBtn = document.createElement("button");
+    uploadBtn.textContent = "Upload";
+    uploadBtn.style.cssText =
+        "padding:10px 28px;font-size:15px;border:none;border-radius:8px;" +
+        "background:#a6e3a1;color:#1e1e2e;cursor:pointer;font-weight:600;" +
+        "white-space:nowrap;display:none";
+
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    cancel.style.cssText =
+        "padding:10px 28px;font-size:14px;border:1px solid #585b70;" +
+        "border-radius:8px;background:transparent;color:#a6adc8;" +
+        "cursor:pointer;white-space:nowrap";
+
+    // ── upload handler (shared for both modes) ──
+    function doUpload(blob, name, size) {{
         uploadBtn.style.display = "none";
         chooseBtn.style.display = "none";
         cancel.style.display = "none";
         dropHint.style.display = "none";
+        divider.style.display = "none";
+        pasteArea.style.display = "none";
+        fnRow.style.display = "none";
         progressWrap.style.display = "block";
         fileInfo.textContent = "Uploading\\u2026 0%";
         fileInfo.style.color = "#89b4fa";
 
         const token = localStorage.getItem("token");
         const formData = new FormData();
-        formData.append("file", selectedFile);
+        formData.append("file", blob, name);
 
         const xhr = new XMLHttpRequest();
 
@@ -1508,8 +1590,8 @@ return await new Promise((resolve) => {{
                     container.remove();
                     resolve(JSON.stringify({{
                         ok: true,
-                        name: selectedFile.name,
-                        size: selectedFile.size,
+                        name: name,
+                        size: size,
                         file_id: result.id,
                     }}));
                 }} catch (e) {{
@@ -1530,6 +1612,17 @@ return await new Promise((resolve) => {{
         xhr.open("POST", "/api/v1/files/");
         xhr.setRequestHeader("Authorization", "Bearer " + token);
         xhr.send(formData);
+    }}
+
+    uploadBtn.onclick = () => {{
+        if (mode === "file" && selectedFile) {{
+            doUpload(selectedFile, selectedFile.name, selectedFile.size);
+        }} else if (mode === "text") {{
+            const text = pasteArea.value;
+            const name = fnInput.value.trim() || "pasted.txt";
+            const blob = new Blob([text], {{ type: "text/plain" }});
+            doUpload(blob, name, blob.size);
+        }}
     }};
 
     cancel.onclick = () => {{
@@ -1537,9 +1630,9 @@ return await new Promise((resolve) => {{
         resolve(JSON.stringify({{ ok: false, error: "User cancelled" }}));
     }};
 
+    // ── assemble layout ──
     const btnRow = document.createElement("div");
-    btnRow.style.cssText = "display:flex;align-items:center;justify-content:center;gap:12px";
-    btnRow.appendChild(chooseBtn);
+    btnRow.style.cssText = "display:flex;align-items:center;justify-content:center;gap:12px;margin-top:20px";
     btnRow.appendChild(uploadBtn);
     btnRow.appendChild(cancel);
 
@@ -1548,14 +1641,18 @@ return await new Promise((resolve) => {{
     card.appendChild(fileInfo);
     card.appendChild(progressWrap);
     card.appendChild(input);
-    card.appendChild(btnRow);
+    card.appendChild(chooseBtn);
     card.appendChild(dropHint);
+    card.appendChild(divider);
+    card.appendChild(pasteArea);
+    card.appendChild(fnRow);
+    card.appendChild(btnRow);
     container.appendChild(card);
     document.body.appendChild(container);
 }});
 """
 
-            await _emit(__event_emitter__, "Waiting for file selection...")
+            await _emit(__event_emitter__, "Waiting for user input...")
 
             raw = await __event_call__({"type": "execute", "data": {"code": js}})
 
@@ -1572,8 +1669,8 @@ return await new Promise((resolve) => {{
 
             if not result.get("ok"):
                 err = result.get("error", "Unknown error")
-                await _emit(__event_emitter__, f"File not uploaded: {err}", done=True)
-                return f"File not uploaded: {err}"
+                await _emit(__event_emitter__, f"Not uploaded: {err}", done=True)
+                return f"Not uploaded: {err}"
 
             filename = result.get("name", "unknown")
             file_size = result.get("size", 0)

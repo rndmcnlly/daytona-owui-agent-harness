@@ -45,7 +45,7 @@ After the control plane reports `state=started`, a readiness probe (`echo ready`
 | `write(path, content)` | Write/create file | `mkdir -p` parent via exec, then `POST /files/upload` |
 | `edit(path, old_string, new_string, replace_all)` | Exact string replacement | Download, string replace, re-upload. Rejects ambiguous matches unless `replace_all=True`. |
 | `attach(path)` | Show file to user without consuming model context | Classifies file as text/image/binary, renders appropriate viewer as inline iframe. See [Rich attachments](#rich-attachments) below. |
-| `ingest(prompt)` | Get a file from the user into the sandbox | Pops a file picker modal via `__event_call__`, user selects a local file, bytes go directly to sandbox. See [Ingest](#ingest) below. |
+| `ingest(prompt)` | Get a file or pasted text from the user into the sandbox | Pops a modal via `__event_call__` with a file picker/drop zone and a paste-text area. Content goes directly to sandbox. See [Ingest](#ingest) below. |
 | `destroy(confirm)` | Permanently delete the sandbox | Requires `confirm=true` as a safety guard. Force-deletes all sandboxes matching the user's label. A fresh sandbox is created automatically on the next tool call. |
 
 ### Key implementation details
@@ -92,25 +92,25 @@ This uses OWUI's [Rich UI Embedding](https://docs.openwebui.com/features/extensi
 
 ### Ingest
 
-The `ingest` tool is the inverse of `attach`: instead of pushing a file from the sandbox to the user, it pulls a file from the user's local machine into the sandbox. The file bytes never enter the model's context window. They transit through OWUI's file storage for a few seconds (as a relay) before being pushed to the sandbox and deleted from OWUI.
+The `ingest` tool is the inverse of `attach`: instead of pushing a file from the sandbox to the user, it pulls content from the user into the sandbox. The user can either upload a file from their machine or paste text directly. The content never enters the model's context window. It transits through OWUI's file storage for a few seconds (as a relay) before being pushed to the sandbox and deleted from OWUI.
 
 When the model calls `ingest(prompt)`, the tool:
 
 1. Ensures the sandbox is running (same `_ensure_sandbox()` lifecycle as all other tools)
-2. Injects JavaScript via `__event_call__` that renders a Catppuccin Mocha-themed file picker modal with a progress bar
-3. The user picks a local file via `<input type="file">` (works in all browsers, no File System Access API dependency)
-4. JavaScript uploads the file to OWUI's Files API (`POST /api/v1/files/`) using XHR (for upload progress), then returns just the file ID through `__event_call__`
+2. Injects JavaScript via `__event_call__` that renders a Catppuccin Mocha-themed modal with two stacked input sections: a file picker/drop zone on top, and a paste-text area below
+3. The user either picks/drops a local file, or pastes text into the textarea (with an editable filename field, defaulting to `pasted.txt`)
+4. JavaScript uploads the content to OWUI's Files API (`POST /api/v1/files/`) using XHR (for upload progress), then returns just the file ID through `__event_call__`
 5. Python reads the file from OWUI's storage layer (direct in-process import, no HTTP self-call), uploads to the sandbox at `/home/daytona/workspace/{filename}`, and deletes the transient file from OWUI
 
 **Why the OWUI relay?** OWUI's `__event_call__` bridge has a message size limit that prevents returning large payloads (like base64-encoded files) from JavaScript to Python. The workaround routes the bytes through a normal HTTP upload to OWUI's Files API (which has no such limit), then reads them from disk in-process. The file is deleted immediately after transfer.
 
 **What the model sees**: A short confirmation string like `"Uploaded data.csv (42.0 KB) to /home/daytona/workspace/data.csv"`. The model can then use `read()`, `bash()`, etc. to work with the file.
 
-**What the user sees**: A modal overlay with the prompt text (e.g. "Upload your CSV dataset"), a file chooser button, file size validation, a progress bar during upload, and Upload/Cancel buttons.
+**What the user sees**: A modal overlay with the prompt text, two input sections (file upload and text paste), a progress bar during upload, and Upload/Cancel buttons. The two sections are separated by a divider. Selecting a file clears any pasted text and vice versa — only one mode is active at a time.
 
 **Design notes**:
-- The `prompt` parameter is optional — a generic message is shown if omitted. The model uses it to tell the user *what* file is needed.
-- The destination path is derived from the picked filename, not specified by the model. This keeps the tool surface minimal.
+- The `prompt` parameter is optional — a generic message is shown if omitted. The model uses it to tell the user *what* content is needed.
+- For file uploads, the destination path is derived from the picked filename. For pasted text, the user can edit the filename (defaults to `pasted.txt`).
 - Files are capped at 25 MB. The modal shows a clear error if the user picks something too large.
 - Requires `__event_call__` (OWUI's browser-side JavaScript execution), which means the toolkit must be used in **Native function calling mode**.
 - Uses `open_webui.models.files.Files` and `open_webui.storage.provider.Storage` to read the file in-process rather than making HTTP calls to localhost.
@@ -178,12 +178,24 @@ Unit tests (pure-function tests for `_parse_env_vars`, `_classify_file`, `_rende
 
 The `ingest` tool requires a live browser with `__event_call__` support and cannot be tested headlessly. Use Native function calling mode and verify:
 
-1. **Modal appears**: Model calls `ingest("Upload a test file")` → Catppuccin-themed modal with prompt text
+**File upload mode:**
+
+1. **Modal appears**: Model calls `ingest("Upload a test file")` → Catppuccin-themed modal with prompt text, file picker section on top, paste-text section below
 2. **File selection**: Click "Choose File...", pick a small text file → filename and size shown in green, Upload button appears
 3. **Size rejection**: Pick a file > 25 MB → red error text, no Upload button
-4. **Cancel**: Click Cancel → model gets "User cancelled"
-5. **Upload progress**: Click Upload on a ~1 MB file → progress bar fills, percentage updates, buttons hide during upload
-6. **Processing phase**: After progress hits 100%, bar turns green, text says "Processing..."
-7. **Sandbox delivery**: Model gets `"Uploaded foo.txt (1.2 KB) to /home/daytona/workspace/foo.txt"` → verify with `bash("ls -la workspace/foo.txt")` or `read("workspace/foo.txt")`
-8. **OWUI cleanup**: Check OWUI Files (admin panel or API) → transient file should be deleted
-9. **Binary files**: Repeat with a PDF or image → verify `bash("file workspace/test.pdf")` shows correct type
+4. **Drag-and-drop**: Drag a file onto the modal → dashed border highlight, file selected on drop
+5. **Cancel**: Click Cancel → model gets "User cancelled"
+6. **Upload progress**: Click Upload on a ~1 MB file → progress bar fills, percentage updates, other controls hide during upload
+7. **Processing phase**: After progress hits 100%, bar turns green, text says "Processing..."
+8. **Sandbox delivery**: Model gets `"Uploaded foo.txt (1.2 KB) to /home/daytona/workspace/foo.txt"` → verify with `bash("ls -la workspace/foo.txt")` or `read("workspace/foo.txt")`
+9. **OWUI cleanup**: Check OWUI Files (admin panel or API) → transient file should be deleted
+10. **Binary files**: Repeat with a PDF or image → verify `bash("file workspace/test.pdf")` shows correct type
+
+**Text paste mode:**
+
+11. **Paste text**: Type or paste content into the textarea → Upload button appears, file info area stays clear
+12. **Filename field**: Default value is `pasted.txt`, editable by the user before uploading
+13. **Mode exclusivity**: Select a file, then type in textarea → file selection clears. Type text, then pick a file → textarea clears.
+14. **Text upload**: Paste some text, change filename to `config.yaml`, click Upload → progress bar, then model gets `"Uploaded config.yaml (...) to /home/daytona/workspace/config.yaml"`
+15. **Content verification**: Use `read("workspace/config.yaml")` → content matches what was pasted
+16. **Empty text**: Clear the textarea → Upload button disappears
