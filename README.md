@@ -1,6 +1,6 @@
 # Lathe
 
-An Open WebUI toolkit that gives any OWUI-compatible model a coding agent's tool surface — `bash`, `read`, `write`, `edit`, `attach`, `ingest`, `onboard`, `destroy` — executing against per-user sandbox VMs with transparent lifecycle management.
+An Open WebUI toolkit that gives any OWUI-compatible model a coding agent's tool surface — `bash`, `read`, `write`, `edit`, `attach`, `ingest`, `onboard`, `ssh`, `preview`, `destroy` — executing against per-user sandbox VMs with transparent lifecycle management.
 
 ## Design
 
@@ -46,6 +46,7 @@ After the control plane reports `state=started`, a readiness probe (`echo ready`
 | `edit(path, old_string, new_string, replace_all)` | Exact string replacement | Download, string replace, re-upload. Rejects ambiguous matches unless `replace_all=True`. |
 | `attach(path)` | Show file to user without consuming model context | Classifies file as text/image/binary, renders appropriate viewer as inline iframe. See [Rich attachments](#rich-attachments) below. |
 | `ingest(prompt)` | Get a file or pasted text from the user into the sandbox | Pops a modal via `__event_call__` with a file picker/drop zone and a paste-text area. Content goes directly to sandbox. See [Ingest](#ingest) below. |
+| `ssh(expires_in_minutes)` | Give the user interactive shell access | Generates a time-limited SSH access token via the sandbox provider API. Returns an `ssh` command the user can paste into their terminal, VS Code Remote SSH, or JetBrains Gateway. Default 60 min, max 24 hours. |
 | `destroy(confirm)` | Permanently delete the sandbox | Requires `confirm=true` as a safety guard. Force-deletes all sandboxes matching the user's label. A fresh sandbox is created automatically on the next tool call. |
 
 ### Key implementation details
@@ -137,7 +138,7 @@ Environment variables are `export`-ed in the bash script preamble with values si
 
 ### Sandbox provider API surface used
 
-- **Control plane** (`app.daytona.io/api`): `GET /sandbox`, `POST /sandbox`, `POST /sandbox/{id}/start`, `POST /sandbox/{id}/stop`, `POST /sandbox/{id}/recover`
+- **Control plane** (`app.daytona.io/api`): `GET /sandbox`, `POST /sandbox`, `POST /sandbox/{id}/start`, `POST /sandbox/{id}/stop`, `POST /sandbox/{id}/recover`, `POST /sandbox/{id}/ssh-access`
 - **Toolbox** (`proxy.app.daytona.io/toolbox/{id}`): `POST /process/execute`, `GET /files/download`, `POST /files/upload`
 
 ## Files

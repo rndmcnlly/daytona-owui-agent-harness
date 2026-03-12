@@ -694,6 +694,28 @@ async def test_int_ensure_sandbox(R: Results, tools: Tools, user: dict):
         R.check("back to normal after dup cleanup", sandbox_id_3 == sandbox_id, f"{sandbox_id_3[:12]} != {sandbox_id[:12]}")
 
 
+async def test_int_ssh(R: Results, tools: Tools, user: dict):
+
+    print("\n── ssh: invalid expires_in_minutes (too low) ──")
+    r = await tools.ssh(expires_in_minutes=0, __user__=user, __event_emitter__=mock_emitter)
+    R.check("expires_in_minutes=0 rejected", "Error" in r and "1" in r, r[:200])
+
+    print("\n── ssh: invalid expires_in_minutes (too high) ──")
+    r = await tools.ssh(expires_in_minutes=1441, __user__=user, __event_emitter__=mock_emitter)
+    R.check("expires_in_minutes=1441 rejected", "Error" in r and "1440" in r, r[:200])
+
+    print("\n── ssh: generate SSH access (default 60 min) ──")
+    r = await tools.ssh(__user__=user, __event_emitter__=mock_emitter)
+    R.check("ssh returns command", "ssh" in r.lower(), r[:300])
+    R.check("mentions validity", "60 min" in r, r[:300])
+    R.check("contains ssh command block", "```" in r, r[:300])
+
+    print("\n── ssh: generate SSH access (custom 30 min) ──")
+    r = await tools.ssh(expires_in_minutes=30, __user__=user, __event_emitter__=mock_emitter)
+    R.check("custom expiry returns command", "ssh" in r.lower(), r[:300])
+    R.check("mentions 30 min", "30 min" in r, r[:300])
+
+
 async def test_int_preview(R: Results, tools: Tools, user: dict):
 
     print("\n── preview: invalid port (too low) ──")
@@ -792,6 +814,7 @@ INTEGRATION_GROUPS = {
     "onboard": test_int_onboard,
     "truncation": test_int_truncation,
     "env_vars": test_int_env_vars,
+    "ssh": test_int_ssh,
     "preview": test_int_preview,
     "ensure_sandbox": test_int_ensure_sandbox,
     "destroy": test_int_destroy,  # must run last among integration tests

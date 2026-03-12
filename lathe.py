@@ -2,10 +2,10 @@
 title: Lathe
 author: Adam Smith
 author_url: https://adamsmith.as
-description: Coding agent tools (bash, read, write, edit, attach, ingest, onboard, preview) backed by per-user sandbox VMs with transparent lifecycle management.
+description: Coding agent tools (bash, read, write, edit, attach, ingest, onboard, ssh, preview) backed by per-user sandbox VMs with transparent lifecycle management.
 required_open_webui_version: 0.4.0
 requirements: httpx
-version: 0.6.0
+version: 0.7.0
 licence: MIT
 """
 
@@ -1781,6 +1781,57 @@ return await new Promise((resolve) => {{
                 f"Note: the sandbox auto-stops after ~15 min of inactivity regardless of "
                 f"running background processes, killing the server. If the user reports "
                 f"the preview stopped working, restart the server and call preview() again."
+            )
+
+        return await _tool_guard(__event_emitter__, _run())
+
+    async def ssh(
+        self,
+        expires_in_minutes: int = 60,
+        __user__: dict = {},
+        __event_emitter__=None,
+    ) -> str:
+        """
+        Generate a time-limited SSH access command for the user's sandbox.
+        Returns an ssh command the user can paste into their local terminal,
+        VS Code Remote SSH, or JetBrains Gateway to get an interactive shell.
+        This is a human tool — the model generates the token, the user connects.
+        :param expires_in_minutes: How long the SSH token is valid (1–1440 minutes). Defaults to 60.
+        """
+        async def _run():
+            if not isinstance(expires_in_minutes, int) or expires_in_minutes < 1 or expires_in_minutes > 1440:
+                return "Error: expires_in_minutes must be an integer between 1 and 1440 (24 hours)."
+
+            email = _get_email(__user__)
+            sandbox_id = await _ensure_sandbox(self.valves, email, __event_emitter__)
+
+            await _emit(__event_emitter__, "Creating SSH access token...")
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    _api(self.valves, f"/sandbox/{sandbox_id}/ssh-access"),
+                    params={"expiresInMinutes": expires_in_minutes},
+                    headers=_headers(self.valves),
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+            ssh_command = data.get("sshCommand", "")
+            if not ssh_command:
+                # Fallback: construct from token if sshCommand not present
+                token = data.get("token", "")
+                if not token:
+                    return "Error: Daytona returned neither sshCommand nor token."
+                ssh_command = f"ssh {token}@ssh.app.daytona.io"
+
+            await _emit(__event_emitter__, "SSH access ready", done=True)
+            return (
+                f"SSH command (valid {expires_in_minutes} min):\n\n"
+                f"```\n{ssh_command}\n```\n\n"
+                f"The user can paste this into their terminal, VS Code Remote SSH, "
+                f"or JetBrains Gateway.\n\n"
+                f"Note: the sandbox auto-stops after ~{self.valves.auto_stop_minutes} min of inactivity. "
+                f"Active SSH sessions keep the sandbox alive."
             )
 
         return await _tool_guard(__event_emitter__, _run())
