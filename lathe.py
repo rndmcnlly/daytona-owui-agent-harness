@@ -2,10 +2,10 @@
 title: Lathe
 author: Adam Smith
 author_url: https://adamsmith.as
-description: Coding agent tools (bash, read, write, edit, attach, ingest, onboard) backed by per-user sandbox VMs with transparent lifecycle management.
+description: Coding agent tools (bash, read, write, edit, attach, ingest, onboard, preview) backed by per-user sandbox VMs with transparent lifecycle management.
 required_open_webui_version: 0.4.0
 requirements: httpx
-version: 0.4.0
+version: 0.5.0
 licence: MIT
 """
 
@@ -1638,5 +1638,53 @@ return await new Promise((resolve) => {{
             size_str = _human_size(file_size)
             await _emit(__event_emitter__, f"Uploaded {filename} ({size_str})", done=True)
             return f"Uploaded {filename} ({size_str}) to {dest_path}"
+
+        return await _tool_guard(__event_emitter__, _run())
+
+    async def preview(
+        self,
+        port: int = 3000,
+        __user__: dict = {},
+        __event_emitter__=None,
+    ) -> str:
+        """
+        Generate a preview URL for a service running in the sandbox.
+        Returns a signed URL that the user can open directly in a new browser tab
+        (no extra headers needed). The URL is valid for about 1 hour.
+        IMPORTANT: The server must be started in the background first, or bash()
+        will block forever waiting for it to exit. Use this pattern:
+          nohup python3 -m http.server 3000 > /tmp/server.log 2>&1 & echo $!
+        Then call preview(3000). The echoed PID can be used later: kill <PID>
+        You know the app's routes — suggest relevant paths for the user to visit.
+        :param port: The port the sandbox service is listening on (3000–9999). Defaults to 3000.
+        """
+        async def _run():
+            if not isinstance(port, int) or port < 3000 or port > 9999:
+                return "Error: port must be an integer between 3000 and 9999."
+
+            email = _get_email(__user__)
+            sandbox_id = await _ensure_sandbox(self.valves, email, __event_emitter__)
+
+            await _emit(__event_emitter__, f"Generating preview URL for port {port}...")
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(
+                    _api(self.valves, f"/sandbox/{sandbox_id}/ports/{port}/signed-preview-url"),
+                    params={"expiresInSeconds": 3600},
+                    headers=_headers(self.valves),
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+            url = data.get("url", "")
+            if not url:
+                return "Error: Daytona returned an empty preview URL."
+
+            await _emit(__event_emitter__, f"Preview URL ready (port {port})", done=True)
+            return (
+                f"Preview URL (valid ~1 hour): {url}\n\n"
+                f"The user can open this in a new browser tab. "
+                f"They may see a Daytona security warning on first visit — they can click through it."
+            )
 
         return await _tool_guard(__event_emitter__, _run())

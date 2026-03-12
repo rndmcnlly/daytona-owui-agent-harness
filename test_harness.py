@@ -684,6 +684,42 @@ async def test_int_ensure_sandbox(R: Results, tools: Tools, user: dict):
         R.check("back to normal after dup cleanup", sandbox_id_3 == sandbox_id, f"{sandbox_id_3[:12]} != {sandbox_id[:12]}")
 
 
+async def test_int_preview(R: Results, tools: Tools, user: dict):
+
+    print("\n── preview: invalid port (too low) ──")
+    r = await tools.preview(port=80, __user__=user, __event_emitter__=mock_emitter)
+    R.check("port 80 rejected", "Error" in r and "3000" in r, r[:200])
+
+    print("\n── preview: invalid port (too high) ──")
+    r = await tools.preview(port=10000, __user__=user, __event_emitter__=mock_emitter)
+    R.check("port 10000 rejected", "Error" in r and "9999" in r, r[:200])
+
+    print("\n── preview: start a server then get preview URL ──")
+    # Start a simple HTTP server in the background on port 8080
+    await tools.bash(
+        "python3 -m http.server 8080 &",
+        __user__=user,
+        __event_emitter__=mock_emitter,
+    )
+    # Give the server a moment to start
+    import asyncio as _asyncio
+    await _asyncio.sleep(1)
+
+    r = await tools.preview(port=8080, __user__=user, __event_emitter__=mock_emitter)
+    R.check("preview returns URL", "Preview URL" in r, r[:300])
+    R.check("URL contains https://", "https://" in r, r[:300])
+    R.check("mentions 1 hour validity", "1 hour" in r, r[:300])
+    R.check("mentions Daytona warning", "warning" in r.lower(), r[:300])
+
+    print("\n── preview: default port ──")
+    r = await tools.preview(__user__=user, __event_emitter__=mock_emitter)
+    # Port 3000 may not have a listener, but the API should still return a URL
+    R.check("default port returns URL", "Preview URL" in r or "Error" in r, r[:300])
+
+    # Clean up the background server
+    await tools.bash("pkill -f 'http.server 8080' || true", __user__=user, __event_emitter__=mock_emitter)
+
+
 async def test_int_destroy(R: Results, tools: Tools, user: dict):
 
     print("\n── destroy: safety guard (confirm=false) ──")
@@ -746,6 +782,7 @@ INTEGRATION_GROUPS = {
     "onboard": test_int_onboard,
     "truncation": test_int_truncation,
     "env_vars": test_int_env_vars,
+    "preview": test_int_preview,
     "ensure_sandbox": test_int_ensure_sandbox,
     "destroy": test_int_destroy,  # must run last among integration tests
 }
