@@ -1,0 +1,372 @@
+/* Lathe docs — Catppuccin Mocha palette */
+
+:root {
+    --base: #1e1e2e;
+    --mantle: #181825;
+    --crust: #11111b;
+    --surface0: #313244;
+    --surface1: #45475a;
+    --surface2: #585b70;
+    --overlay0: #6c7086;
+    --overlay1: #7f849c;
+    --overlay2: #9399b2;
+    --subtext0: #a6adc8;
+    --subtext1: #bac2de;
+    --text: #cdd6f4;
+    --lavender: #b4befe;
+    --blue: #89b4fa;
+    --sapphire: #74c7ec;
+    --sky: #89dceb;
+    --teal: #94e2d5;
+    --green: #a6e3a1;
+    --yellow: #f9e2af;
+    --peach: #fab387;
+    --maroon: #eba0ac;
+    --red: #f38ba8;
+    --mauve: #cba6f7;
+    --pink: #f5c2e7;
+    --flamingo: #f2cdcd;
+    --rosewater: #f5e0dc;
+
+    --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html {
+    font-size: 18px;
+    -webkit-font-smoothing: antialiased;
+    scroll-behavior: smooth;
+}
+
+body {
+    color: var(--text);
+    font-family: var(--font-sans);
+    background-color: var(--crust);
+    line-height: 1.6;
+    min-height: 100vh;
+}
+
+.container {
+    max-width: 680px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 0 1.5rem;
+}
+
+a {
+    color: var(--blue);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.15s;
+}
+
+a:hover {
+    border-bottom-color: var(--blue);
+}
+
+code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    background: var(--surface0);
+    border: 1px solid var(--surface1);
+    border-radius: 4px;
+    padding: 0.1em 0.35em;
+}
+
+/* ── Hero ─────────────────────────────────────────── */
+
+.hero {
+    text-align: center;
+    padding: 5rem 0 2.5rem 0;
+}
+
+.hero-name {
+    font-size: 3rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    color: var(--text);
+    margin-bottom: 0.25rem;
+}
+
+.hero-name span {
+    color: var(--peach);
+}
+
+.hero-tagline {
+    font-size: 1.15rem;
+    color: var(--subtext0);
+    max-width: 480px;
+    margin: 0 auto 1.75rem auto;
+    line-height: 1.5;
+}
+
+.hero-links {
+    display: flex;
+    gap: 1.5rem;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.hero-links a {
+    color: var(--overlay2);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.85rem;
+    border-bottom: none;
+    transition: color 0.15s;
+}
+
+.hero-links a:hover {
+    color: var(--text);
+}
+
+.hero-links svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+}
+
+/* ── Demo video ───────────────────────────────────── */
+
+.demo-video {
+    margin: 2rem 0;
+}
+
+.demo-video video {
+    width: 100%;
+    border-radius: 8px;
+    border: 1px solid var(--surface0);
+    display: block;
+}
+
+.demo-caption {
+    text-align: center;
+    font-size: 0.8rem;
+    color: var(--overlay1);
+    margin-top: 0.5rem;
+}
+
+.demo-caption a {
+    color: var(--overlay2);
+}
+
+.demo-caption a:hover {
+    color: var(--text);
+}
+
+/* ── Callout box ──────────────────────────────────── */
+
+.callout {
+    background: var(--mantle);
+    border: 1px solid var(--surface0);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 2rem 0;
+    font-size: 0.9rem;
+    color: var(--subtext1);
+    line-height: 1.6;
+}
+
+.callout strong {
+    color: var(--text);
+}
+
+.callout code {
+    font-size: 0.8rem;
+}
+
+/* ── Sections ─────────────────────────────────────── */
+
+.section {
+    padding: 2.5rem 0;
+    border-top: 1px solid var(--surface0);
+}
+
+.section-label {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--peach);
+    margin-bottom: 0.5rem;
+}
+
+.section-title {
+    font-size: 1.35rem;
+    font-weight: 800;
+    color: var(--text);
+    margin-bottom: 1rem;
+    letter-spacing: -0.02em;
+}
+
+.section p {
+    color: var(--subtext1);
+    margin-bottom: 1rem;
+    line-height: 1.65;
+}
+
+.section p:last-child {
+    margin-bottom: 0;
+}
+
+/* ── Tool grid ────────────────────────────────────── */
+
+.tool-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+    margin: 1.25rem 0;
+}
+
+.tool-card {
+    background: var(--mantle);
+    border: 1px solid var(--surface0);
+    border-radius: 8px;
+    padding: 0.9rem 1rem;
+    transition: border-color 0.15s;
+}
+
+.tool-card:hover {
+    border-color: var(--surface1);
+}
+
+.tool-card h3 {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 0.25rem;
+    font-family: var(--font-mono);
+}
+
+.tool-card p {
+    font-size: 0.8rem;
+    color: var(--overlay2);
+    margin: 0;
+    line-height: 1.45;
+}
+
+/* ── Recipe list ──────────────────────────────────── */
+
+.recipe-list {
+    list-style: none;
+    padding: 0;
+    margin: 1rem 0;
+}
+
+.recipe-list li {
+    padding: 0.6rem 0;
+    border-bottom: 1px solid var(--surface0);
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    font-size: 0.9rem;
+}
+
+.recipe-list li:last-child {
+    border-bottom: none;
+}
+
+.recipe-label {
+    color: var(--text);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.recipe-desc {
+    color: var(--overlay2);
+}
+
+/* ── Terminal box (like install-box on pi.dev) ───── */
+
+.terminal-box {
+    background: var(--mantle);
+    border: 1px solid var(--surface0);
+    border-radius: 8px;
+    padding: 0.75rem 1.25rem;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text);
+    margin: 1.25rem 0;
+    overflow-x: auto;
+    white-space: pre;
+    line-height: 1.6;
+}
+
+.terminal-box .prompt {
+    color: var(--overlay1);
+    user-select: none;
+}
+
+.terminal-box .comment {
+    color: var(--overlay0);
+}
+
+/* ── Architecture diagram (text) ──────────────────── */
+
+.arch-diagram {
+    background: var(--mantle);
+    border: 1px solid var(--surface0);
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.7;
+    color: var(--subtext0);
+    overflow-x: auto;
+    margin: 1.25rem 0;
+    white-space: pre;
+}
+
+.arch-diagram .highlight {
+    color: var(--peach);
+}
+
+.arch-diagram .dim {
+    color: var(--overlay0);
+}
+
+/* ── Footer ───────────────────────────────────────── */
+
+.footer {
+    text-align: center;
+    padding: 2.5rem 0;
+    border-top: 1px solid var(--surface0);
+    font-size: 0.8rem;
+    color: var(--overlay1);
+}
+
+.footer a {
+    color: var(--overlay2);
+    border-bottom: none;
+}
+
+.footer a:hover {
+    color: var(--text);
+}
+
+/* ── Responsive ───────────────────────────────────── */
+
+@media (max-width: 520px) {
+    .hero-name {
+        font-size: 2.25rem;
+    }
+
+    .hero-tagline {
+        font-size: 1rem;
+    }
+
+    .tool-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .section-title {
+        font-size: 1.15rem;
+    }
+}

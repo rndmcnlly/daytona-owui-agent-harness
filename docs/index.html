@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="style.css">
+    <title>Lathe — a coding agent surface for Open WebUI</title>
+    <meta name="description" content="Lathe gives any Open WebUI model a full coding agent toolkit: bash, file editing, live preview, SSH access, and more — all running in persistent cloud sandboxes.">
+    <meta property="og:title" content="Lathe">
+    <meta property="og:type" content="website">
+    <meta property="og:description" content="A coding agent surface for Open WebUI. Persistent sandboxes, real tools, zero setup for users.">
+    <meta property="og:url" content="https://rndmcnlly.github.io/lathe/">
+</head>
+<body>
+<div class="container">
+
+<!-- ── Hero ────────────────────────────────────────── -->
+<div class="hero">
+    <div class="hero-name"><span>/</span>lathe</div>
+    <p class="hero-tagline">
+        A coding agent surface for Open WebUI. Your model gets real tools.
+        Your files persist. You never touch a terminal.
+    </p>
+    <div class="hero-links">
+        <a href="https://github.com/rndmcnlly/lathe">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+            GitHub
+        </a>
+        <a href="https://chat.adamsmith.as">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            Live demo
+        </a>
+    </div>
+</div>
+
+<!-- ── What it is ─────────────────────────────────── -->
+<div class="callout">
+    <strong>Lathe</strong> is an <a href="https://docs.openwebui.com/">Open WebUI</a> toolkit — a single Python file
+    your admin installs once. After that, every model on the server can
+    run shell commands, edit code, preview web apps, transfer files, and SSH into
+    a persistent cloud sandbox. One sandbox per user, survives across conversations.
+</div>
+
+<!-- ── Demo video ─────────────────────────────────── -->
+<div class="demo-video">
+    <video autoplay loop muted playsinline>
+        <source src="https://github.com/user-attachments/assets/c5291df9-ccf3-4d0d-8d1d-f1c3366e2410" type="video/mp4">
+    </video>
+    <p class="demo-caption">
+        This video was produced by an agent using Lathe, inside its own sandbox.
+        <a href="https://github.com/rndmcnlly/lathe/issues/11">Story &rarr;</a>
+    </p>
+</div>
+
+<!-- ── How it works ───────────────────────────────── -->
+<div class="section">
+    <div class="section-label">Architecture</div>
+    <h2 class="section-title">Chat in, code out</h2>
+    <p>
+        You talk to a model in Open WebUI. The model calls Lathe's tools —
+        <code>bash</code>, <code>write</code>, <code>edit</code>, <code>read</code>,
+        <code>preview</code>, and more. Every tool call executes in a cloud VM
+        that belongs to you, managed by <a href="https://www.daytona.io/">Daytona</a>.
+    </p>
+    <div class="arch-diagram"><span class="dim">┌─────────────┐    tool calls    ┌─────────────┐    API    ┌──────────────┐</span>
+<span class="dim">│</span>  <span class="highlight">You</span> (chat)  <span class="dim">│───────────────▶│</span>  <span class="highlight">Lathe</span>       <span class="dim">│────────▶│</span>  <span class="highlight">Your sandbox</span> <span class="dim">│</span>
+<span class="dim">│</span>  Open WebUI  <span class="dim">│◀───────────────│</span>  (OWUI tool) <span class="dim">│◀────────│</span>  (Daytona VM) <span class="dim">│</span>
+<span class="dim">└─────────────┘   tool results   └─────────────┘  stdout   └──────────────┘</span></div>
+    <p>
+        The sandbox starts automatically on your first tool call and persists
+        indefinitely. Files you create in one conversation are still there in the next.
+        The sandbox idles after 15 minutes and archives after an hour, but wakes
+        transparently whenever you need it.
+    </p>
+</div>
+
+<!-- ── Tools ──────────────────────────────────────── -->
+<div class="section">
+    <div class="section-label">Tools</div>
+    <h2 class="section-title">What your model can do</h2>
+    <p>
+        These are real tools the model calls — not prompt tricks. Each one runs
+        server-side against your sandbox VM.
+    </p>
+    <div class="tool-grid">
+        <div class="tool-card">
+            <h3>bash</h3>
+            <p>Run any shell command. Install packages, compile code, run tests, manage git repos.</p>
+        </div>
+        <div class="tool-card">
+            <h3>read</h3>
+            <p>Read files with line numbers. Supports offset/limit for large files.</p>
+        </div>
+        <div class="tool-card">
+            <h3>write</h3>
+            <p>Create or overwrite files. Parent directories are created automatically.</p>
+        </div>
+        <div class="tool-card">
+            <h3>edit</h3>
+            <p>Exact string replacement in files. Safer than rewriting the whole file.</p>
+        </div>
+        <div class="tool-card">
+            <h3>attach</h3>
+            <p>Show a file to you without burning the model's context. Syntax highlighting, image preview, or download card.</p>
+        </div>
+        <div class="tool-card">
+            <h3>ingest</h3>
+            <p>Upload a file from your machine or paste text directly into the sandbox.</p>
+        </div>
+        <div class="tool-card">
+            <h3>preview</h3>
+            <p>Get a live URL for a web server running in your sandbox. See your app in the browser.</p>
+        </div>
+        <div class="tool-card">
+            <h3>ssh</h3>
+            <p>Get a time-limited SSH command for direct terminal access. Works with VS Code Remote too.</p>
+        </div>
+        <div class="tool-card">
+            <h3>onboard</h3>
+            <p>Load project context and agent skills from your repo's conventions.</p>
+        </div>
+        <div class="tool-card">
+            <h3>destroy</h3>
+            <p>Wipe your sandbox and start fresh. Requires explicit confirmation.</p>
+        </div>
+    </div>
+</div>
+
+<!-- ── Recipes ────────────────────────────────────── -->
+<div class="section">
+    <div class="section-label">Recipes</div>
+    <h2 class="section-title">Things to try</h2>
+    <p>
+        These are starting points — real prompts you can send to a model with
+        Lathe enabled. The model figures out which tools to call.
+    </p>
+    <ul class="recipe-list">
+        <li>
+            <span class="recipe-label">Build a web app</span>
+            <span class="recipe-desc">"Build me a simple todo app with FastAPI and HTMX, then preview it."</span>
+        </li>
+        <li>
+            <span class="recipe-label">Analyze data</span>
+            <span class="recipe-desc">Use <code>ingest</code> to upload a CSV, then ask the model to analyze it with pandas and attach a chart.</span>
+        </li>
+        <li>
+            <span class="recipe-label">Work on a repo</span>
+            <span class="recipe-desc">"Clone my repo, run the tests, and fix any failures."</span>
+        </li>
+        <li>
+            <span class="recipe-label">Provide credentials</span>
+            <span class="recipe-desc">Set <code>env_vars</code> in your user settings (e.g. <code>{"GITHUB_TOKEN":"ghp_..."}</code>) — every bash command gets them, the model never sees the values.</span>
+        </li>
+        <li>
+            <span class="recipe-label">Go hands-on</span>
+            <span class="recipe-desc">"Give me SSH access" — get a command you can paste into your terminal or VS Code.</span>
+        </li>
+        <li>
+            <span class="recipe-label">Share a file</span>
+            <span class="recipe-desc">"Attach the generated report" — see the file inline without it entering the conversation context.</span>
+        </li>
+    </ul>
+</div>
+
+<!-- ── What persists ──────────────────────────────── -->
+<div class="section">
+    <div class="section-label">Persistence</div>
+    <h2 class="section-title">Your workspace survives</h2>
+    <p>
+        Unlike ephemeral code interpreters, your Lathe sandbox is yours. It has your
+        files, your installed packages, your git repos, your running servers. Start a
+        conversation Monday, come back Wednesday — everything is where you left it.
+    </p>
+    <p>
+        The sandbox sleeps when idle (15 min default) and archives after an hour.
+        The next tool call wakes it transparently. If you want a clean slate,
+        ask the model to <code>destroy</code> it.
+    </p>
+</div>
+
+<!-- ── User settings ──────────────────────────────── -->
+<div class="section">
+    <div class="section-label">Configuration</div>
+    <h2 class="section-title">User settings</h2>
+    <p>
+        Most users need zero configuration. But if you work with APIs or private repos,
+        you can set environment variables that get injected into every shell command:
+    </p>
+    <div class="terminal-box"><span class="comment"># In Open WebUI → Settings → Tools → Lathe → env_vars:</span>
+{"GITHUB_TOKEN": "ghp_...", "OPENAI_API_KEY": "sk-..."}</div>
+    <p>
+        Values are never shown to the model. They're exported in the shell preamble
+        with single-quoted values to prevent expansion. Your system prompt can
+        reference <code>$GITHUB_TOKEN</code> by name without leaking the secret.
+    </p>
+</div>
+
+<!-- ── For admins ─────────────────────────────────── -->
+<div class="section">
+    <div class="section-label">Deployment</div>
+    <h2 class="section-title">For admins</h2>
+    <p>
+        Lathe is a single Python file (<code>lathe.py</code>) deployed as an
+        <a href="https://docs.openwebui.com/features/extensibility/plugin/tools/">Open WebUI Tool</a>.
+        It needs a <a href="https://www.daytona.io/">Daytona</a> API key and a
+        deployment label. Configure these as admin Valves after install.
+    </p>
+    <p>
+        See the <a href="https://github.com/rndmcnlly/lathe#readme">README</a> for
+        full deployment instructions, valve reference, testing guide, and design docs.
+    </p>
+</div>
+
+<!-- ── Footer ─────────────────────────────────────── -->
+<div class="footer">
+    <p>
+        MIT License &middot;
+        <a href="https://adamsmith.as">Adam Smith</a> &middot;
+        <a href="https://github.com/rndmcnlly/lathe">Source</a>
+    </p>
+</div>
+
+</div>
+</body>
+</html>
