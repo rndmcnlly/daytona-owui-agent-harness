@@ -2,7 +2,7 @@
 title: Lathe
 author: Adam Smith
 author_url: https://adamsmith.as
-description: Coding agent tools (bash, read, write, edit, attach, ingest, onboard, ssh, preview) backed by per-user sandbox VMs with transparent lifecycle management.
+description: Coding agent tools (lathe, bash, read, write, edit, attach, ingest, onboard, ssh, preview, destroy) backed by per-user sandbox VMs with transparent lifecycle management.
 required_open_webui_version: 0.4.0
 requirements: httpx
 version: 0.7.0
@@ -13,6 +13,7 @@ import asyncio
 import base64
 import hashlib
 import html as html_mod
+import inspect
 import io
 import json
 import textwrap
@@ -25,6 +26,36 @@ from pydantic import BaseModel, Field
 
 
 # ── module-level helpers (invisible to OWUI tool discovery) ──────────
+#
+# OWUI discovers tools by calling dir() on the Tools instance and
+# keeping every callable whose name doesn't start with "_".  The
+# underscore filter was only added in Mar 2026 (PR #22408), so older
+# deployments expose *all* methods as tools.  To stay safe across
+# versions, keep helpers at module scope — OWUI never introspects the
+# module, only the class.
+
+
+def _build_tool_catalog(tools_instance) -> str:
+    """Introspect a Tools instance to produce a tool summary table.
+
+    Skips private methods and the lathe() tool itself so the catalog
+    describes only the "real" tools the model can call.
+    """
+    lines = []
+    for name, method in inspect.getmembers(tools_instance, predicate=inspect.ismethod):
+        if name.startswith("_") or name == "lathe":
+            continue
+        sig = inspect.signature(method)
+        params = [
+            p.name for p in sig.parameters.values()
+            if not p.name.startswith("__")
+        ]
+        doc = inspect.getdoc(method) or ""
+        # First sentence of the docstring as the summary
+        summary = doc.split("\n")[0].rstrip(".") if doc else "(no description)"
+        param_str = ", ".join(params) if params else ""
+        lines.append(f"  {name}({param_str}) — {summary}")
+    return "\n".join(sorted(lines))
 
 
 def _headers(valves) -> dict:
@@ -1137,6 +1168,147 @@ class Tools:
     def __init__(self):
         self.valves = self.Valves()
 
+    # ── agent-facing manual ──────────────────────────────────────────
+    #
+    # The manpage system is the model's primary orientation surface.
+    # Design principles:
+    #   - Tool docstrings stay minimal; details are deferred here so
+    #     context budget is spent only when the model actually needs help.
+    #   - The tool catalog is introspected dynamically so it can never
+    #     drift from the actual method list.
+    #   - Manpage content is currently static strings, but the
+    #     architecture is designed to evolve:
+    #
+    # TODO(future): Valve-driven behavioral policy injection.
+    #   Valves already control mechanism (timeouts, sandbox language,
+    #   auto-stop). The next step is for Valve values to also inject
+    #   *policy guidance* into manpage content — e.g. a valve like
+    #   `attach_threshold_lines: int = 500` would cause the overview
+    #   to advise "prefer attach() over read() for files over 500
+    #   lines." Mechanism is fixed at class scan time; policy is
+    #   runtime-configurable through the manual.
+    #
+    # TODO(future): Information architecture expansion.
+    #   v1 ships only "overview". As the toolkit grows, add per-tool
+    #   deep dives (manpage="bash"), workflow recipes
+    #   (manpage="attach-flow"), and troubleshooting guides. Existing
+    #   tool docstrings can then be further scrunched by adding
+    #   breadcrumbs like 'see lathe(manpage="bash") for details'.
+
+    _MANPAGES: dict[str, str] = {
+        "overview": textwrap.dedent("""\
+            # Lathe Toolkit — Overview
+
+            Lathe is a coding-agent toolkit running inside Open WebUI. It gives
+            you a persistent Linux sandbox backed by a Daytona VM with a
+            cross-conversation filesystem. The sandbox is created transparently
+            on first tool use and survives across conversations for the same user.
+
+            ## Sandbox model
+
+            - One sandbox per user, identified by email. The sandbox starts,
+              stops, and recovers automatically — you never manage lifecycle.
+            - The default working directory is /home/daytona/workspace.
+            - /home/daytona/volume is S3/FUSE-backed persistent storage that
+              survives even sandbox destruction (unless wipe_volume=true).
+            - The sandbox auto-stops after a configurable idle timeout and
+              auto-archives after a further interval. Any tool call transparently
+              restarts it.
+
+            ## Tool catalog
+
+            {tool_catalog}
+
+            ## Key workflows
+
+            **Reading vs. attaching files:**
+            Use read() when *you* (the model) need to see file contents — the
+            text enters your context. Use attach() when the *user* needs to see
+            a file — it renders visually in chat but does NOT enter your context,
+            saving tokens. For large files, prefer attach and only read the
+            specific sections you need.
+
+            **Getting files in and out of the sandbox:**
+            Use ingest() to pull files from the user's local machine into the
+            sandbox without burning context (the content goes straight to disk).
+            Use attach() to show sandbox files to the user visually. Neither
+            path passes file content through the conversation.
+
+            **Running services:**
+            Background long-running servers with nohup, then call preview() to
+            get a signed URL the user can open. The sandbox auto-stops on idle,
+            which kills background processes — restart and re-preview if needed.
+
+            **Project context:**
+            Call onboard() at the start of a conversation to load AGENTS.md and
+            discover available skills for the project.
+
+            ## Gotchas
+
+            - Commands are non-interactive. No stdin prompts, no curses UIs. Use
+              -y or equivalent flags. For interactive work, give the user an ssh()
+              token.
+            - bash() output is truncated to the last 2000 lines / 50 KB. If
+              truncated, the full output is saved to /tmp/ — use read() to
+              inspect specific sections.
+            - edit() requires an exact string match (including whitespace). If
+              the match is ambiguous, provide more surrounding context or use
+              replace_all=true.
+            - attach() returns an HTMLResponse rendered for the user. The model
+              receives NO file content back. If you need to verify what was
+              written, use read().
+            - preview() URLs expire after ~1 hour. The sandbox itself stops on
+              idle (~15 min default), killing servers.
+            - destroy() is irreversible. The volume can optionally be preserved.
+            - **Network egress is restricted.** The sandbox can only reach a
+              curated allowlist of hosts: package registries (PyPI, npm, apt),
+              git hosts (GitHub, GitLab, Bitbucket), container registries
+              (Docker Hub, ghcr.io), AI APIs (OpenAI, Anthropic, OpenRouter,
+              Groq, etc.), CDNs (Cloudflare, jsDelivr, unpkg), select cloud
+              storage (S3, GCS), and common dev platforms (Vercel, Supabase,
+              Sentry). Requests to other hosts will silently fail or time out.
+              If a task requires reaching an endpoint not on this list, warn
+              the user early — they may need to use ingest() to bring data in
+              from their local machine instead, or arrange access through an
+              allowlisted proxy.
+            """),
+    }
+
+    # One-line descriptions for the page index (shown on unknown page
+    # lookups and useful for the model to decide which page to request).
+    _MANPAGE_INDEX: dict[str, str] = {
+        "overview": "Big-picture orientation: sandbox model, tool catalog, key workflows, gotchas.",
+    }
+
+    async def lathe(
+        self,
+        manpage: str = "overview",
+        __user__: dict = {},
+        __event_emitter__=None,
+    ) -> str:
+        """
+        Manual for the lathe toolkit: bash, read, write, edit, attach, ingest, onboard, preview, ssh, destroy. Default manpage: overview.
+        :param manpage: Which manual page to return. Use "overview" for big-picture orientation.
+        """
+        tool_catalog = _build_tool_catalog(self)
+
+        if manpage in self._MANPAGES:
+            content = self._MANPAGES[manpage].format(tool_catalog=tool_catalog)
+            await _emit(__event_emitter__, f"Manual page: {manpage}", done=True)
+            return content
+
+        # Unknown page — return the index so the model can discover what exists
+        index_lines = "\n".join(
+            f"  {name} — {desc}"
+            for name, desc in sorted(self._MANPAGE_INDEX.items())
+        )
+        await _emit(__event_emitter__, f"Unknown manpage: {manpage}", done=True)
+        return (
+            f"Unknown manpage \"{manpage}\". Available pages:\n\n"
+            f"{index_lines}\n\n"
+            f"Call lathe(manpage=\"overview\") for big-picture orientation."
+        )
+
     async def destroy(
         self,
         confirm: bool = False,
@@ -1145,15 +1317,10 @@ class Tools:
         __event_emitter__=None,
     ) -> str:
         """
-        Permanently destroy your sandbox. ALL files and state are lost forever.
-        A fresh sandbox will be created automatically on your next tool call.
-        Only use this if your sandbox is in an unrecoverable state.
-        You must set confirm=true to proceed. Without it, no action is taken.
-        By default, the user's persistent volume (/home/daytona/volume) is kept intact
-        and will be re-mounted on the next sandbox. Set wipe_volume=true to also
-        delete the volume for a completely clean slate.
-        :param confirm: Must be set to true to confirm destruction. Defaults to false as a safety measure.
-        :param wipe_volume: Also delete the persistent volume. Defaults to false (volume survives).
+        Permanently destroy the sandbox. Irreversible. Set confirm=true to proceed.
+        Volume is preserved by default; set wipe_volume=true for a clean slate.
+        :param confirm: Must be true to confirm destruction.
+        :param wipe_volume: Also delete the persistent volume (default: false).
         """
         if not confirm:
             return (
@@ -1266,12 +1433,8 @@ class Tools:
         __event_emitter__=None,
     ) -> str:
         """
-        Load project context at the start of a conversation.
-        Call this tool first when beginning work on a project. It returns the project's
-        AGENTS.md (instructions, persona, conventions) and a catalog of available skills
-        (name + description only). To load a skill's full instructions later, use read()
-        on the SKILL.md path shown in the catalog.
-        Fails if the path contains neither an AGENTS.md file nor a .agents/skills/ directory.
+        Load project context (AGENTS.md + skill catalog) at the start of a conversation.
+        Use read() on a skill's SKILL.md path to load its full instructions later.
         :param path: Absolute path to the project root (e.g. /home/daytona/workspace/myproject).
         """
         async def _run():
@@ -1377,20 +1540,11 @@ class Tools:
         __event_emitter__=None,
     ) -> str:
         """
-        Execute a bash command in a persistent Linux sandbox.
-        The sandbox and its filesystem persist across conversations for this user.
-        /home/daytona/volume is S3/FUSE-backed persistent storage that survives sandbox destruction.
-        Supports pipes, redirects, &&, ||, and all standard bash syntax.
-        Commands must be non-interactive (no prompts for input). Use -y flags where needed.
-        For long-running servers, background them: nohup cmd > /tmp/out.log 2>&1 & echo $!
-        Default working directory is /home/daytona/workspace.
-        Output is truncated to the last 2000 lines or 50 KB (whichever limit is hit first).
-        If truncated, the full output is saved to a file in /tmp/ and the path is shown.
-        Use read() or another bash command to inspect specific parts of that file.
-        User-configured environment variables (set via the UserValves env_vars JSON field) are
-        automatically injected into every command — reference them by name without exposing values.
+        Execute a bash command in the persistent Linux sandbox. Non-interactive only.
+        Output truncated to last 2000 lines / 50 KB; full output saved to /tmp/ if truncated.
+        See lathe(manpage="overview") for sandbox model, workflows, and gotchas.
         :param command: The bash command to execute.
-        :param workdir: Working directory for the command (default: /home/daytona/workspace).
+        :param workdir: Working directory (default: /home/daytona/workspace).
         """
         async def _run():
             email = _get_email(__user__)
@@ -1524,11 +1678,10 @@ class Tools:
         __event_emitter__=None,
     ) -> str:
         """
-        Read a file from the persistent Linux sandbox.
-        Returns numbered lines. The sandbox filesystem persists across conversations for this user.
+        Read a file from the sandbox. Returns numbered lines.
         :param path: Absolute path or relative to /home/daytona (e.g. workspace/main.py).
-        :param offset: Line number to start from (1-indexed, default 1).
-        :param limit: Maximum number of lines to return (default 2000).
+        :param offset: Starting line number (1-indexed, default: 1).
+        :param limit: Max lines to return (default: 2000).
         """
         async def _run():
             email = _get_email(__user__)
@@ -1581,8 +1734,7 @@ class Tools:
         __event_emitter__=None,
     ) -> str:
         """
-        Write a file to the persistent Linux sandbox, creating it if it doesn't exist.
-        Parent directories are created automatically. The sandbox filesystem persists across conversations for this user.
+        Write a file to the sandbox (created if it doesn't exist, parents auto-created).
         :param path: Absolute path or relative to /home/daytona (e.g. workspace/main.py).
         :param content: The full file content to write.
         """
@@ -1633,12 +1785,11 @@ class Tools:
         __event_emitter__=None,
     ) -> str:
         """
-        Edit a file in the persistent Linux sandbox by replacing exact string matches.
-        The sandbox filesystem persists across conversations for this user.
+        Edit a file by exact string replacement. Fails on ambiguous matches unless replace_all=true.
         :param path: Absolute path or relative to /home/daytona (e.g. workspace/main.py).
-        :param old_string: The exact text to find and replace. Must match exactly including whitespace and indentation.
+        :param old_string: Exact text to find (must match including whitespace).
         :param new_string: The replacement text.
-        :param replace_all: If true, replace all occurrences. If false (default), fail if multiple matches found.
+        :param replace_all: Replace all occurrences (default: false).
         """
         async def _run():
             email = _get_email(__user__)
@@ -1704,12 +1855,8 @@ class Tools:
         __event_emitter__=None,
     ) -> HTMLResponse:
         """
-        Attach a file from the sandbox for the user to view inline.
-        The file content is rendered visually for the human but is NOT returned
-        to the model. Use read() if you need to see file contents yourself.
-        Text files (syntax-highlighted) and images are always inlined.
-        Audio, video, and binary files are offloaded to OWUI file storage so
-        only a thin viewer shell lands in the chat DB.
+        Show a sandbox file to the user inline. Content is NOT returned to the model.
+        Use read() if you need to see the contents yourself.
         :param path: Absolute path or relative to /home/daytona (e.g. workspace/main.py).
         """
         async def _run():
@@ -1882,12 +2029,10 @@ class Tools:
         __event_call__=None,
     ) -> str:
         """
-        Ask the user to provide content for the sandbox — either by uploading
-        a file from their local machine or by pasting text directly.  The
-        content goes straight to the sandbox filesystem without entering the
-        conversation context or the OWUI database.  Use read() afterward if
-        you need to inspect the contents yourself.
-        :param prompt: Optional message shown to the user explaining what is needed, e.g. "Upload your CSV dataset" or "Paste your configuration".
+        Pull a file or text from the user's machine into the sandbox. Content goes
+        straight to disk without entering the conversation context. Use read() afterward
+        to inspect.
+        :param prompt: Message shown to the user (e.g. "Upload your CSV dataset").
         """
         async def _run():
             email = _get_email(__user__)
@@ -2304,10 +2449,8 @@ return await new Promise((resolve) => {{
         __event_emitter__=None,
     ) -> str:
         """
-        Generate a preview URL for a service running in the sandbox.
-        The server must already be running in the background (see bash docs).
-        Returns a signed URL the user can open in a new browser tab.
-        :param port: The port the sandbox service is listening on (3000–9999). Defaults to 3000.
+        Generate a signed preview URL for a service running in the sandbox.
+        :param port: Port the service listens on (3000–9999, default: 3000).
         """
         async def _run():
             if not isinstance(port, int) or port < 3000 or port > 9999:
@@ -2350,11 +2493,8 @@ return await new Promise((resolve) => {{
         __event_emitter__=None,
     ) -> str:
         """
-        Generate a time-limited SSH access command for the user's sandbox.
-        Returns an ssh command the user can paste into their local terminal,
-        VS Code Remote SSH, or JetBrains Gateway to get an interactive shell.
-        This is a human tool — the model generates the token, the user connects.
-        :param expires_in_minutes: How long the SSH token is valid (1–1440 minutes). Defaults to 60.
+        Generate a time-limited SSH command for the user to connect interactively.
+        :param expires_in_minutes: Token validity in minutes (1–1440, default: 60).
         """
         async def _run():
             if not isinstance(expires_in_minutes, int) or expires_in_minutes < 1 or expires_in_minutes > 1440:
