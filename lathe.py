@@ -696,22 +696,9 @@ def _render_offloaded_html(
     size_str = _human_size(n_bytes)
     api_url = f"/api/v1/files/{file_id}/content"
 
-    # Build type-specific rendering JS (runs after the fetch resolves)
-    if file_type == "image":
-        render_js = f"""
-      var img = document.createElement('img');
-      img.alt = "{esc_fname}";
-      img.style.maxWidth = '100%';
-      img.style.height = 'auto';
-      img.style.borderRadius = '4px';
-      img.src = URL.createObjectURL(blob);
-      var wrap = document.getElementById('content');
-      wrap.style.padding = '16px';
-      wrap.style.display = 'flex';
-      wrap.style.justifyContent = 'center';
-      wrap.style.background = '#181825';
-      wrap.appendChild(img);"""
-    elif file_type == "media":
+    # Build type-specific rendering JS (runs after the fetch resolves).
+    # Images are always inlined by attach() and never reach this path.
+    if file_type == "media":
         is_video = mime.startswith("video/")
         tag = "video" if is_video else "audio"
         extra_style = (
@@ -1890,7 +1877,7 @@ class Tools:
                 except Exception as e:
                     raise RuntimeError(f"OWUI storage offload failed for {filename}: {e}") from e
 
-            # ── inline path: text, images, or offload fallback ───────
+            # ── inline path: text and images ─────────────────────────
             if file_type == "image":
                 html_content = _render_image_html(raw, filename, path)
             elif file_type == "media":
