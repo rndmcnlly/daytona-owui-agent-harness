@@ -155,12 +155,7 @@ Deploy as tool ID `lathe` on any Open WebUI instance:
 # Then POST valves to /api/v1/tools/id/lathe/valves/update
 ```
 
-A gitignored `.env` file is expected at the repo root with credentials used for testing and deployment:
-
-```
-DAYTONA_API_KEY=dtn_...              # sandbox provider API key (used by test harness)
-YOUR_OWUI_INSTANCE_TOKEN=eyJ...      # OWUI JWT for the target server (used to deploy via admin API)
-```
+See `AGENTS.md` for credentials, deployment tooling, and agent working instructions.
 
 ## Testing
 
