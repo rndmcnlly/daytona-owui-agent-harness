@@ -2,6 +2,16 @@
 
 This repo is a single-file Open WebUI toolkit (`lathe.py`) with a test harness (`test_harness.py`). Read both before making changes.
 
+## Three audiences, three homes
+
+This project has three distinct audiences. Each has a designated place for its documentation:
+
+1. **Users** ("What is Lathe? What can it do?") — the docs site at [lathe.tools](https://lathe.tools) (`docs/`). The README should not try to be their entry point.
+2. **OWUI admins** ("Should I install this? How?") — the `README.md`. This is the most important README audience. They need: what it does to their instance, security/trust model, requirements, installation, valve reference. Keep it focused and operational.
+3. **Agents maintaining the project** — this file, `AGENTS.md`. Architecture, credentials, test procedures, contribution rules.
+
+When writing or reorganizing documentation, route content to the right home. Implementation internals (how the onboard script works, output truncation design, browser-side JS mechanics) belong in `docs/` or in code comments — not in the README.
+
 ## Credentials and deployment
 
 Deployment credentials live in `.env` (gitignored). It contains:
