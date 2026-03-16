@@ -18,6 +18,18 @@ tool schemas (names, docstrings, param descriptions) and asked to accomplish
 tasks (e.g. "start a web server and give me a preview link"). Score on: does
 it background the server, does it pick the right port, does it avoid known
 pitfalls. This tests the docstrings as prompts, not the code as code.
+
+TODO (agentic manual testing against a real deployment): The following
+behaviors require OWUI internals (open_webui.models.files, Storage) and
+cannot be tested outside a live OWUI process. Verify these manually by
+deploying and exercising attach() in chat:
+  - attach() on a binary file (e.g. .zip) offloads to OWUI file storage and
+    returns an offloaded viewer shell that fetches via /api/v1/files/{id}/content
+  - attach() on a media file (e.g. .wav, .mp4) similarly offloads and renders
+    an inline <audio>/<video> player that streams from OWUI storage
+  - The offloaded viewer requires allow-same-origin in the iframe sandbox to
+    read localStorage for the JWT; verify the fallback error message appears
+    if that setting is disabled
 """
 # /// script
 # requires-python = ">=3.11"
@@ -496,8 +508,6 @@ async def test_int_attach(R: Results, tools: Tools, user: dict):
         tools.write("workspace/attach_test.txt", "just plain text\nno highlighting\n", __user__=user, __event_emitter__=mock_emitter),
         tools.write("workspace/test_image.svg", svg_content, __user__=user, __event_emitter__=mock_emitter),
         tools.bash(f"echo '{png_b64}' | base64 -d > /home/daytona/workspace/test_image.png", __user__=user, __event_emitter__=mock_emitter),
-        tools.bash("cd /home/daytona/workspace && echo 'hello from zip' > _zipme.txt && zip test_archive.zip _zipme.txt && rm _zipme.txt", __user__=user, __event_emitter__=mock_emitter),
-        tools.bash(r"printf '\x80\x81\x82\xff\xfe\xfd' > /home/daytona/workspace/test_binary.dat", __user__=user, __event_emitter__=mock_emitter),
     )
 
     # Now run all attach tests concurrently
@@ -563,40 +573,10 @@ async def test_int_attach(R: Results, tools: Tools, user: dict):
         R.check("SVG renders as image not code", "<img " in svg_body, "SVG should render as <img>")
         R.check("SVG has correct MIME", "image/svg+xml" in svg_body, "")
 
-    async def t_zip():
-        print("\n── attach: ZIP binary file ──")
-        result = await tools.attach("workspace/test_archive.zip", __user__=user, __event_emitter__=mock_emitter)
-        if isinstance(result, str) and "open_webui" in result:
-            print("  [SKIP] OWUI storage not available outside OWUI process")
-            return
-        R.check("zip returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
-        if not isinstance(result, HTMLResponse):
-            return
-        zip_body = result.body.decode("utf-8")
-        R.check("zip shows filename", "test_archive.zip" in zip_body, "")
-        R.check("zip shows file type", "ZIP" in zip_body, "")
-        R.check("zip has download card (no code viewer)", "gutter" not in zip_body, "binary shouldn't have line gutter")
-        R.check("zip has Save button (under 10MB)", "saveFile" in zip_body, "small zip should be downloadable")
-        R.check("zip does NOT have Copy button", "copyFile" not in zip_body, "binary shouldn't have Copy")
-        R.check("zip has height reporting", "iframe:height" in zip_body, "")
-
-    async def t_dat():
-        print("\n── attach: binary by content (not extension) ──")
-        result = await tools.attach("workspace/test_binary.dat", __user__=user, __event_emitter__=mock_emitter)
-        if isinstance(result, str) and "open_webui" in result:
-            print("  [SKIP] OWUI storage not available outside OWUI process")
-            return
-        R.check("non-UTF8 dat returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
-        if not isinstance(result, HTMLResponse):
-            return
-        dat_body = result.body.decode("utf-8")
-        R.check("non-UTF8 renders as binary card", "gutter" not in dat_body and "<img" not in dat_body, "should be download card")
-        R.check("non-UTF8 has Save button", "saveFile" in dat_body, "small binary should be downloadable")
-
-    await asyncio.gather(t_py(), t_txt(), t_notfound(), t_png(), t_svg(), t_zip(), t_dat())
+    await asyncio.gather(t_py(), t_txt(), t_notfound(), t_png(), t_svg())
 
     # cleanup
-    await tools.bash("rm -f workspace/attach_test.py workspace/attach_test.txt workspace/test_image.png workspace/test_image.svg workspace/test_archive.zip workspace/test_binary.dat", __user__=user, __event_emitter__=mock_emitter)
+    await tools.bash("rm -f workspace/attach_test.py workspace/attach_test.txt workspace/test_image.png workspace/test_image.svg", __user__=user, __event_emitter__=mock_emitter)
 
 
 async def test_int_onboard(R: Results, tools: Tools, user: dict):
