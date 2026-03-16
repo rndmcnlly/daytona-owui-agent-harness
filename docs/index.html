@@ -63,10 +63,10 @@
         <code>preview</code>, and more. Every tool call executes in a cloud VM
         that belongs to you, managed by <a href="https://www.daytona.io/">Daytona</a>.
     </p>
-    <div class="arch-diagram"><span class="dim">┌─────────────┐    tool calls    ┌─────────────┐    API    ┌──────────────┐</span>
-<span class="dim">│</span>  <span class="highlight">You</span> (chat)  <span class="dim">│───────────────▶│</span>  <span class="highlight">Lathe</span>       <span class="dim">│────────▶│</span>  <span class="highlight">Your sandbox</span> <span class="dim">│</span>
-<span class="dim">│</span>  Open WebUI  <span class="dim">│◀───────────────│</span>  (OWUI tool) <span class="dim">│◀────────│</span>  (Daytona VM) <span class="dim">│</span>
-<span class="dim">└─────────────┘   tool results   └─────────────┘  stdout   └──────────────┘</span></div>
+    <div class="arch-diagram"><span class="dim">┌─────────────┐  tool calls  ┌─────────────┐   API   ┌──────────────┐</span>
+<span class="dim">│</span> <span class="highlight">You</span> (chat)  <span class="dim">│─────────────▶│</span> <span class="highlight">Lathe</span>       <span class="dim">│────────▶│</span> <span class="highlight">Your sandbox</span> <span class="dim">│</span>
+<span class="dim">│</span> Open WebUI  <span class="dim">│◀─────────────│</span> (OWUI tool) <span class="dim">│◀────────│</span> (Daytona VM) <span class="dim">│</span>
+<span class="dim">└─────────────┘ tool results └─────────────┘ stdout  └──────────────┘</span></div>
     <p>
         The sandbox starts automatically on your first tool call and persists
         indefinitely. Files you create in one conversation are still there in the next.
