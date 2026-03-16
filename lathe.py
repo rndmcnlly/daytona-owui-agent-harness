@@ -5,13 +5,12 @@ author_url: https://adamsmith.as
 description: Coding agent tools (lathe, bash, read, write, edit, attach, ingest, onboard, ssh, preview, destroy) backed by per-user sandbox VMs with transparent lifecycle management.
 required_open_webui_version: 0.4.0
 requirements: httpx
-version: 0.7.0
+version: 0.8.0
 licence: MIT
 """
 
 import asyncio
 import base64
-import hashlib
 import html as html_mod
 import inspect
 import io
@@ -19,6 +18,7 @@ import json
 import textwrap
 import time
 import urllib.parse
+import uuid
 
 import httpx
 from fastapi.responses import HTMLResponse
@@ -1130,6 +1130,10 @@ class Tools:
             "python",
             description="Default language runtime (python, typescript, javascript)",
         )
+        foreground_timeout_seconds: int = Field(
+            30,
+            description="Seconds to wait for a bash command before auto-backgrounding it (1-300)",
+        )
 
     class UserValves(BaseModel):
         env_vars: str = Field(
@@ -1226,9 +1230,15 @@ class Tools:
             - Commands are non-interactive. No stdin prompts, no curses UIs. Use
               -y or equivalent flags. For interactive work, give the user an ssh()
               token.
+            - bash() auto-backgrounds commands that exceed ~30 seconds. When this
+              happens, it returns a background descriptor with a /tmp/cmd/<id>/
+              state directory (log, exit, sh). Use foreground_seconds= to extend
+              the wait (e.g. foreground_seconds=120 for known-slow commands or
+              when waiting for a backgrounded command to finish). The command
+              keeps running even after backgrounding.
             - bash() output is truncated to the last 2000 lines / 50 KB. If
-              truncated, the full output is saved to /tmp/ — use read() to
-              inspect specific sections.
+              truncated, the full output is available in the log file at
+              /tmp/cmd/<id>/log — use read() to inspect specific sections.
             - edit() requires an exact string match (including whitespace). If
               the match is ambiguous, provide more surrounding context or use
               replace_all=true.
@@ -1471,10 +1481,7 @@ class Tools:
             """).replace("__PATH__", _shell_quote(p))
 
             # Write script to temp file and execute it (avoids all quoting issues)
-            script_tag = hashlib.sha1(
-                (p + str(time.time())).encode("utf-8", errors="replace")
-            ).hexdigest()[:12]
-            script_path = f"/tmp/_onboard_{script_tag}.sh"
+            script_path = f"/tmp/_onboard_{uuid.uuid4()}.sh"
             content_bytes = script.encode("utf-8")
             await client.post(
                 _toolbox(self.valves, sandbox_id, "/files/upload"),
@@ -1520,15 +1527,19 @@ class Tools:
         self,
         command: str,
         workdir: str = "/home/daytona/workspace",
+        foreground_seconds: int = 0,
         __user__: dict = {},
         __event_emitter__=None,
     ) -> str:
         """
         Execute a bash command in the persistent Linux sandbox. Non-interactive only.
-        Output truncated to last 2000 lines / 50 KB; full output saved to /tmp/ if truncated.
+        Commands that finish within the foreground window return output directly.
+        Long-running commands auto-background and return a descriptor with log
+        file paths for monitoring.
         See lathe(manpage="overview") for sandbox model, workflows, and gotchas.
         :param command: The bash command to execute.
         :param workdir: Working directory (default: /home/daytona/workspace).
+        :param foreground_seconds: Seconds to wait before auto-backgrounding (default: per admin setting, usually 30). Use higher values when waiting for a known-slow command to finish.
         """
         async def _run(client):
             email = _get_email(__user__)
@@ -1544,13 +1555,18 @@ class Tools:
                 raw_env = getattr(user_valves, "env_vars", "") or ""
                 user_pairs = _parse_env_vars(raw_env)
 
-            # Build a script that sets non-interactive defaults and user env
-            # vars, then runs the command exactly as provided. Writing to a
-            # temp file avoids all quoting/escaping issues with the Daytona
-            # execute API's argv splitting — the command reaches bash with
-            # zero transformations. User secrets are present only in the HTTP
-            # request body (never logged by lathe) and in the script file on
-            # the sandbox's ephemeral /tmp filesystem.
+            # ── Build wrapper script ────────────────────────────────
+            #
+            # Each command gets a /proc-style directory under /tmp/cmd/:
+            #   /tmp/cmd/<uuid>/sh    — the script
+            #   /tmp/cmd/<uuid>/log   — stdout+stderr (tee'd live)
+            #   /tmp/cmd/<uuid>/exit  — exit code (written on completion)
+            cmd_id = str(uuid.uuid4())
+            cmd_dir = f"/tmp/cmd/{cmd_id}"
+            log_path = f"{cmd_dir}/log"
+            exit_path = f"{cmd_dir}/exit"
+            script_path = f"{cmd_dir}/sh"
+
             user_env_lines = "".join(
                 f"export {k}={_shell_quote(v)}\n" for k, v in user_pairs
             )
@@ -1563,16 +1579,12 @@ class Tools:
                 "NPM_CONFIG_YES=true "
                 "CI=true\n"
                 + user_env_lines
+                + f"exec > >(tee {_shell_quote(log_path)}) 2>&1\n"
                 + command
                 + "\n"
             )
 
-            script_tag = hashlib.sha1(
-                (command + str(time.time())).encode("utf-8", errors="replace")
-            ).hexdigest()[:12]
-            script_path = f"/tmp/_cmd_{script_tag}.sh"
-
-            # Upload the script
+            # Upload the script (creates parent dirs automatically)
             await client.post(
                 _toolbox(self.valves, sandbox_id, "/files/upload"),
                 params={"path": script_path},
@@ -1581,46 +1593,134 @@ class Tools:
                 timeout=60.0,
             )
 
-            # Execute it
-            _BASH_PROCESS_TIMEOUT_MS = 120_000
+            # ── Create a per-command session ─────────────────────────
+            # Each bash() call gets its own session so commands never
+            # queue behind each other.  This is critical: a shared
+            # session serialises commands, so monitoring a backgrounded
+            # build via tail/cat would block until the build finishes.
+            session_id = f"lathe-cmd-{cmd_id}"
             resp = await client.post(
-                _toolbox(self.valves, sandbox_id, "/process/execute"),
+                _toolbox(self.valves, sandbox_id, f"/process/session"),
+                headers=_headers(self.valves),
+                json={"sessionId": session_id},
+                timeout=30.0,
+            )
+            if resp.status_code not in (200, 409):
+                resp.raise_for_status()
+
+            # ── Execute asynchronously in the session ────────────────
+            # The actual command writes exit code to a sidecar file so
+            # the agent can check completion even after backgrounding.
+            # Session exec has no cwd parameter, so we cd explicitly.
+            exec_command = (
+                f"cd {_shell_quote(workdir)} && "
+                f"bash {script_path}; EC=$?; "
+                f"echo $EC > {_shell_quote(exit_path)}; "
+                f"(exit $EC)"
+            )
+            resp = await client.post(
+                _toolbox(self.valves, sandbox_id, f"/process/session/{session_id}/exec"),
                 headers=_headers(self.valves),
                 json={
-                    "command": f"bash {script_path}",
-                    "cwd": workdir,
-                    "timeout": _BASH_PROCESS_TIMEOUT_MS,
+                    "command": exec_command,
+                    "runAsync": True,
                 },
-                timeout=_BASH_PROCESS_TIMEOUT_MS / 1000 + 30,  # process ceiling + buffer
+                timeout=30.0,
             )
             resp.raise_for_status()
-            data = resp.json()
+            session_cmd_id = resp.json().get("cmdId", "")
 
-            exit_code = data.get("exitCode", -1)
-            result = data.get("result", "")
+            # ── Foreground polling window ────────────────────────────
+            # Per-call override wins; 0 (default) falls back to Valve.
+            fg_timeout = max(1, min(300,
+                foreground_seconds if foreground_seconds > 0
+                else self.valves.foreground_timeout_seconds))
+            deadline = time.time() + fg_timeout
+            poll_interval = 0.25
+            last_status_at = time.time()
+            finished = False
+            exit_code = None
 
-            # ── Truncation + spill-to-file ──────────────────────────
+            while time.time() < deadline:
+                await asyncio.sleep(poll_interval)
+                poll_interval = min(poll_interval * 1.5, 2.0)
+
+                # Check command status via session info
+                resp = await client.get(
+                    _toolbox(self.valves, sandbox_id, f"/process/session/{session_id}"),
+                    headers=_headers(self.valves),
+                    timeout=15.0,
+                )
+                if resp.status_code != 200:
+                    continue
+                session_info = resp.json()
+                commands = session_info.get("commands", [])
+
+                # Find our command by id
+                for cmd in commands:
+                    if cmd.get("id") == session_cmd_id:
+                        ec = cmd.get("exitCode")
+                        if ec is not None:
+                            exit_code = ec
+                            finished = True
+                        break
+
+                if finished:
+                    break
+
+                # Emit progress every ~5s
+                now = time.time()
+                if now - last_status_at >= 5.0:
+                    elapsed = int(now - (deadline - fg_timeout))
+                    await _emit(__event_emitter__, f"Running... ({elapsed}s)")
+                    last_status_at = now
+
+            # ── Fetch logs and clean up session ─────────────────────
+            logs_resp = await client.get(
+                _toolbox(self.valves, sandbox_id, f"/process/session/{session_id}/command/{session_cmd_id}/logs"),
+                headers=_headers(self.valves),
+                timeout=30.0,
+            )
+            result = logs_resp.text if logs_resp.status_code == 200 else ""
+
+            if finished:
+                # Session served its purpose — clean up to avoid accumulation.
+                await client.delete(
+                    _toolbox(self.valves, sandbox_id, f"/process/session/{session_id}"),
+                    headers=_headers(self.valves),
+                    timeout=10.0,
+                )
+
+            # ── Auto-backgrounded: command still running ────────────
+            if not finished:
+                elapsed = int(time.time() - (deadline - fg_timeout))
+                await _emit(__event_emitter__, f"Command backgrounded ({elapsed}s)", done=True)
+
+                # Return partial output + background descriptor
+                output, was_truncated, meta = _truncate_tail(result)
+                if not output.strip():
+                    output = "(no output yet)"
+
+                bg_notice = (
+                    f"\n\n[Backgrounded after {elapsed}s — command is still running]\n"
+                    f"  CMD={cmd_dir}\n"
+                    f"  Peek: tail $CMD/log\n"
+                    f"  Poll: test -f $CMD/exit && cat $CMD/exit || echo RUNNING\n"
+                    f"  Wait: bash(\"while [ ! -f {cmd_dir}/exit ]; do sleep 2; done; "
+                    f"cat {cmd_dir}/exit; tail {cmd_dir}/log\", foreground_seconds=120)\n"
+                    f"Tell the user the command is running. Don't check until they ask or "
+                    f"you have a concrete reason to expect completion."
+                )
+                return output + bg_notice
+
+            # ── Command finished within foreground window ────────────
             output, was_truncated, meta = _truncate_tail(result)
             spill_path = None
 
             if was_truncated:
-                # Write the full output to a unique temp file in the sandbox
-                # so the model can retrieve slices without re-running.
-                tag = hashlib.sha1(result[:256].encode("utf-8", errors="replace")).hexdigest()[:8]
-                spill_path = f"/tmp/_bash_output_{tag}.log"
-                await client.post(
-                    _toolbox(self.valves, sandbox_id, "/files/upload"),
-                    params={"path": spill_path},
-                    headers={"Authorization": f"Bearer {self.valves.daytona_api_key}"},
-                    files={
-                        "file": (
-                            "file",
-                            io.BytesIO(result.encode("utf-8")),
-                            "application/octet-stream",
-                        )
-                    },
-                    timeout=120.0,
-                )
+                # The log file already exists on disk (tee'd by the
+                # wrapper script), so just point at it — no upload needed.
+                spill_path = log_path
 
             await _emit(__event_emitter__, "Command complete", done=True)
 

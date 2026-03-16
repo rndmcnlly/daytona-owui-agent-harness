@@ -624,33 +624,142 @@ async def test_int_onboard(R: Results, tools: Tools, user: dict):
 async def test_int_truncation(R: Results, tools: Tools, user: dict):
     import re
 
-    print("\n── bash: output truncation with spill file ──")
+    print("\n── bash: output truncation with log file ──")
     result = await tools.bash(
         "for i in $(seq 1 3000); do echo \"output line $i\"; done",
         __user__=user, __event_emitter__=mock_emitter,
     )
     R.check("truncated output has notice", "[Showing lines" in result, result[-200:])
-    R.check("notice mentions full output file", "/tmp/_bash_output_" in result, result[-200:])
+    R.check("notice mentions log file", "/tmp/cmd/" in result, result[-200:])
     R.check("last line present in output", "output line 3000" in result, result[-200:])
     R.check("first line NOT in truncated output", "output line 1\n" not in result, "line 1 should be truncated away")
 
-    spill_match = re.search(r"/tmp/_bash_output_\w+\.log", result)
+    spill_match = re.search(r"/tmp/cmd/[0-9a-f-]+/log", result)
     if spill_match:
         spill_path = spill_match.group(0)
         verify, head_result = await asyncio.gather(
             tools.bash(f"wc -l < {spill_path}", __user__=user, __event_emitter__=mock_emitter),
             tools.bash(f"head -n 3 {spill_path}", __user__=user, __event_emitter__=mock_emitter),
         )
-        R.check("spill file has all 3000 lines", "3000" in verify, verify.strip())
-        R.check("can retrieve early lines from spill file", "output line 1" in head_result, head_result[:100])
+        R.check("log file has all 3000 lines", "3000" in verify, verify.strip())
+        R.check("can retrieve early lines from log file", "output line 1" in head_result, head_result[:100])
     else:
-        R.check("spill file path found in notice", False, "no path match found")
+        R.check("log file path found in notice", False, "no path match found")
 
     print("\n── bash: small output NOT truncated ──")
     result = await tools.bash("echo hello", __user__=user, __event_emitter__=mock_emitter)
     R.check("small output has no truncation notice", "[Showing lines" not in result, result[:200])
 
-    await tools.bash("rm -f /tmp/_bash_output_*.log", __user__=user, __event_emitter__=mock_emitter)
+    await tools.bash("rm -rf /tmp/cmd", __user__=user, __event_emitter__=mock_emitter)
+
+
+async def test_int_bash_sessions(R: Results, tools: Tools, user: dict):
+    import re
+
+    print("\n── bash sessions: state directory layout ──")
+    # The command itself creates /tmp/cmd/<uuid>/ — so we list dirs,
+    # then identify the one that contains our sentinel in its log.
+    result = await tools.bash(
+        "echo state-dir-sentinel-42", __user__=user, __event_emitter__=mock_emitter,
+    )
+    R.check("simple command returns output", "state-dir-sentinel-42" in result, result[:200])
+
+    # Find the state dir whose log contains our sentinel
+    find_result = await tools.bash(
+        "grep -rl 'state-dir-sentinel-42' /tmp/cmd/*/log 2>/dev/null | head -1",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    sentinel_log = find_result.strip()
+    sentinel_dir = sentinel_log.rsplit("/", 1)[0] if "/log" in sentinel_log else ""
+
+    if sentinel_dir:
+        dir_result = await tools.bash(
+            f"ls {sentinel_dir}/", __user__=user, __event_emitter__=mock_emitter,
+        )
+        R.check("state dir has log file", "log" in dir_result, dir_result[:200])
+        R.check("state dir has exit file", "exit" in dir_result, dir_result[:200])
+        R.check("state dir has sh file", "sh" in dir_result, dir_result[:200])
+
+        exit_result = await tools.bash(
+            f"cat {sentinel_dir}/exit", __user__=user, __event_emitter__=mock_emitter,
+        )
+        R.check("exit file contains 0 for success", exit_result.strip() == "0", exit_result.strip())
+    else:
+        R.check("found sentinel state dir", False, f"grep returned: {find_result[:200]}")
+
+    print("\n── bash sessions: non-zero exit code in state dir ──")
+    fail_result = await tools.bash("echo fail-sentinel-99 && exit 7", __user__=user, __event_emitter__=mock_emitter)
+    R.check("non-zero exit reported", "Exit code: 7" in fail_result, fail_result[:200])
+
+    find_fail = await tools.bash(
+        "grep -rl 'fail-sentinel-99' /tmp/cmd/*/log 2>/dev/null | head -1",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    fail_dir = find_fail.strip().rsplit("/", 1)[0] if "/log" in find_fail.strip() else ""
+    if fail_dir:
+        exit_result = await tools.bash(
+            f"cat {fail_dir}/exit", __user__=user, __event_emitter__=mock_emitter,
+        )
+        R.check("exit file contains 7 for failure", exit_result.strip() == "7", exit_result.strip())
+    else:
+        R.check("found fail sentinel state dir", False, f"grep returned: {find_fail[:200]}")
+
+    print("\n── bash sessions: log file captures output ──")
+    await tools.bash("echo logtest-alpha && echo logtest-beta", __user__=user, __event_emitter__=mock_emitter)
+    find_log = await tools.bash(
+        "grep -rl 'logtest-alpha' /tmp/cmd/*/log 2>/dev/null | head -1",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    log_path = find_log.strip()
+    if log_path:
+        log_result = await tools.bash(f"cat {log_path}", __user__=user, __event_emitter__=mock_emitter)
+        R.check("log file has first line", "logtest-alpha" in log_result, log_result[:200])
+        R.check("log file has second line", "logtest-beta" in log_result, log_result[:200])
+    else:
+        R.check("found logtest state dir", False, f"grep returned: {find_log[:200]}")
+
+    print("\n── bash sessions: foreground_seconds override ──")
+    # A short foreground_seconds=2 with a 5s sleep should auto-background
+    bg_result = await tools.bash(
+        "echo bg-start && sleep 5 && echo bg-done",
+        foreground_seconds=2,
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    R.check("short timeout triggers backgrounding", "Backgrounded" in bg_result, bg_result[:300])
+    R.check("background descriptor has CMD=", "CMD=" in bg_result, bg_result[:300])
+    R.check("background descriptor has Peek hint", "Peek:" in bg_result, bg_result[:300])
+    R.check("background descriptor has Poll hint", "Poll:" in bg_result, bg_result[:300])
+    R.check("background descriptor has Wait hint", "foreground_seconds=" in bg_result, bg_result[:500])
+
+    # Extract CMD dir from background descriptor
+    cmd_match = re.search(r"CMD=(/tmp/cmd/[0-9a-f-]+)", bg_result)
+    if cmd_match:
+        bg_cmd_dir = cmd_match.group(1)
+
+        # Wait for the backgrounded command to finish using the suggested pattern
+        wait_result = await tools.bash(
+            f"while [ ! -f {bg_cmd_dir}/exit ]; do sleep 1; done; "
+            f"cat {bg_cmd_dir}/exit; echo '---'; cat {bg_cmd_dir}/log",
+            foreground_seconds=30,
+            __user__=user, __event_emitter__=mock_emitter,
+        )
+        R.check("can wait for backgrounded command", "bg-done" in wait_result, wait_result[:300])
+        R.check("backgrounded command exit code is 0", "\n0\n" in wait_result or wait_result.strip().startswith("0"), wait_result[:100])
+    else:
+        R.check("CMD dir found in background descriptor", False, "no CMD= match")
+
+    print("\n── bash sessions: long foreground_seconds avoids backgrounding ──")
+    # A foreground_seconds=60 with a 3s sleep should NOT background
+    fg_result = await tools.bash(
+        "sleep 3 && echo fg-completed",
+        foreground_seconds=60,
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    R.check("long timeout avoids backgrounding", "fg-completed" in fg_result, fg_result[:200])
+    R.check("no background descriptor", "Backgrounded" not in fg_result, fg_result[:200])
+
+    # Clean up
+    await tools.bash("rm -rf /tmp/cmd", __user__=user, __event_emitter__=mock_emitter)
 
 
 async def test_int_env_vars(R: Results, tools: Tools, user: dict):
@@ -974,6 +1083,7 @@ INTEGRATION_GROUPS = {
     "attach": test_int_attach,
     "onboard": test_int_onboard,
     "truncation": test_int_truncation,
+    "bash_sessions": test_int_bash_sessions,
     "env_vars": test_int_env_vars,
     "ssh": test_int_ssh,
     "preview": test_int_preview,
