@@ -21,7 +21,7 @@ pitfalls. This tests the docstrings as prompts, not the code as code.
 """
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["httpx", "pydantic", "python-dotenv"]
+# dependencies = ["httpx", "pydantic", "python-dotenv", "beautifulsoup4", "markdownify"]
 # ///
 
 import asyncio
@@ -229,11 +229,11 @@ async def test_int_write_read_edit(R: Results, tools: Tools, user: dict):
 
     print("\n── write: create file ──")
     test_content = "line one\nline two\nline three\n"
-    r = await tools.write("workspace/test_file.txt", test_content, **ctx)
+    r = await tools.write("/home/daytona/workspace/test_file.txt", test_content, **ctx)
     R.check("write reports success", "Wrote" in r and "test_file.txt" in r, r[:200])
 
     print("\n── read: full file ──")
-    r = await tools.read("workspace/test_file.txt", **ctx)
+    r = await tools.read("/home/daytona/workspace/test_file.txt", **ctx)
     R.check("read returns content", "line one" in r and "line two" in r, r[:200])
     R.check("read has line numbers", "1: line one" in r, r[:200])
     R.check("read shows total lines", "3 lines total" in r, r[:200])
@@ -241,59 +241,59 @@ async def test_int_write_read_edit(R: Results, tools: Tools, user: dict):
     # Independent reads
     async def t_offset():
         print("\n── read: offset and limit ──")
-        r = await tools.read("workspace/test_file.txt", offset=2, limit=1, **ctx)
+        r = await tools.read("/home/daytona/workspace/test_file.txt", offset=2, limit=1, **ctx)
         R.check("offset/limit works", "2: line two" in r, r[:200])
         R.check("respects limit", "line three" not in r, r[:200])
 
     async def t_notfound():
         print("\n── read: file not found ──")
-        r = await tools.read("workspace/nonexistent.txt", **ctx)
+        r = await tools.read("/home/daytona/workspace/nonexistent.txt", **ctx)
         R.check("reports file not found", "Error" in r or "not found" in r.lower(), r[:200])
 
     await asyncio.gather(t_offset(), t_notfound())
 
     print("\n── edit: single replacement ──")
-    r = await tools.edit("workspace/test_file.txt", "line two", "LINE TWO EDITED", **ctx)
+    r = await tools.edit("/home/daytona/workspace/test_file.txt", "line two", "LINE TWO EDITED", **ctx)
     R.check("edit reports success", "Replaced 1" in r, r[:200])
 
-    r = await tools.read("workspace/test_file.txt", **ctx)
+    r = await tools.read("/home/daytona/workspace/test_file.txt", **ctx)
     R.check("edit persisted", "LINE TWO EDITED" in r, r[:200])
     R.check("other lines untouched", "line one" in r and "line three" in r, r[:200])
 
     # Independent edit tests
     async def t_edit_notfound():
         print("\n── edit: old_string not found ──")
-        r = await tools.edit("workspace/test_file.txt", "this text does not exist", "replacement", **ctx)
+        r = await tools.edit("/home/daytona/workspace/test_file.txt", "this text does not exist", "replacement", **ctx)
         R.check("reports not found", "not found" in r.lower(), r[:200])
 
     async def t_edit_multi():
         print("\n── edit: multiple matches without replace_all ──")
-        await tools.write("workspace/dup_test.txt", "aaa\nbbb\naaa\nbbb\naaa\n", **ctx)
-        r = await tools.edit("workspace/dup_test.txt", "aaa", "zzz", **ctx)
+        await tools.write("/home/daytona/workspace/dup_test.txt", "aaa\nbbb\naaa\nbbb\naaa\n", **ctx)
+        r = await tools.edit("/home/daytona/workspace/dup_test.txt", "aaa", "zzz", **ctx)
         R.check("rejects ambiguous edit", "3 matches" in r or "multiple" in r.lower(), r[:200])
 
         print("\n── edit: replace_all ──")
-        r = await tools.edit("workspace/dup_test.txt", "aaa", "zzz", replace_all=True, **ctx)
+        r = await tools.edit("/home/daytona/workspace/dup_test.txt", "aaa", "zzz", replace_all=True, **ctx)
         R.check("replace_all reports count", "Replaced 3" in r, r[:200])
-        r = await tools.read("workspace/dup_test.txt", **ctx)
+        r = await tools.read("/home/daytona/workspace/dup_test.txt", **ctx)
         R.check("replace_all applied", "aaa" not in r and "zzz" in r, r[:200])
 
     async def t_edit_missing():
         print("\n── edit: file not found ──")
-        r = await tools.edit("workspace/nonexistent.txt", "foo", "bar", **ctx)
+        r = await tools.edit("/home/daytona/workspace/nonexistent.txt", "foo", "bar", **ctx)
         R.check("edit on missing file errors", "Error" in r or "not found" in r.lower(), r[:200])
 
     async def t_nested():
         print("\n── write: nested path ──")
-        r = await tools.write("workspace/deep/nested/dir/file.txt", "nested content\n", **ctx)
+        r = await tools.write("/home/daytona/workspace/deep/nested/dir/file.txt", "nested content\n", **ctx)
         R.check("write to nested path succeeds", "Wrote" in r, r[:200])
-        r = await tools.read("workspace/deep/nested/dir/file.txt", **ctx)
+        r = await tools.read("/home/daytona/workspace/deep/nested/dir/file.txt", **ctx)
         R.check("nested file readable", "nested content" in r, r[:200])
 
     await asyncio.gather(t_edit_notfound(), t_edit_multi(), t_edit_missing(), t_nested())
 
     # cleanup
-    await tools.bash("rm -rf workspace/test_file.txt workspace/dup_test.txt workspace/deep", **ctx)
+    await tools.bash("rm -rf /home/daytona/workspace/test_file.txt /home/daytona/workspace/dup_test.txt /home/daytona/workspace/deep", **ctx)
 
 
 async def test_int_onboard(R: Results, tools: Tools, user: dict):
@@ -306,14 +306,14 @@ async def test_int_onboard(R: Results, tools: Tools, user: dict):
     R.check("fails without AGENTS.md or .agents/", "Error" in r, r[:200])
 
     print("\n── onboard: AGENTS.md only ──")
-    await tools.write("workspace/test_project/AGENTS.md", "# Test Agent\nYou are a helpful test agent.\n", **ctx)
+    await tools.write("/home/daytona/workspace/test_project/AGENTS.md", "# Test Agent\nYou are a helpful test agent.\n", **ctx)
     r = await tools.onboard("/home/daytona/workspace/test_project", **ctx)
     R.check("returns AGENTS.md content", "helpful test agent" in r, r[:300])
     R.check("no skills section when none exist", "Available Skills" not in r, r[:300])
 
     print("\n── onboard: with skills ──")
     await tools.write(
-        "workspace/test_project/.agents/skills/test-skill/SKILL.md",
+        "/home/daytona/workspace/test_project/.agents/skills/test-skill/SKILL.md",
         "---\nname: test-skill\ndescription: A skill for testing things.\n---\n\n# Test Skill\nDetailed instructions here.\n",
         **ctx,
     )
@@ -634,7 +634,7 @@ async def test_int_fetch(R: Results, tools: Tools, user: dict):
     print("\n── fetch: simple GET to file ──")
     r = await tools.fetch(
         url="https://httpbin.org/get",
-        output="@workspace/fetch_test_get.json",
+        output="@/home/daytona/workspace/fetch_test_get.json",
         **ctx,
     )
     R.check("GET returns HTTP 200", "HTTP 200" in r, r[:300])
@@ -642,7 +642,7 @@ async def test_int_fetch(R: Results, tools: Tools, user: dict):
     R.check("GET shows response headers", "content-type" in r.lower() or "Content-Type" in r, r[:500])
 
     # Verify the file actually landed in the sandbox
-    verify = await tools.bash("cat workspace/fetch_test_get.json | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d[\"url\"])'",
+    verify = await tools.bash("cat /home/daytona/workspace/fetch_test_get.json | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d[\"url\"])'",
                               **ctx)
     R.check("GET response body is valid JSON with url field", "httpbin.org/get" in verify, verify[:200])
 
@@ -678,21 +678,21 @@ async def test_int_fetch(R: Results, tools: Tools, user: dict):
     R.check("inline POST echoes body", "hello" in r and "world" in r, r[:500])
 
     print("\n── fetch: POST with @file body ──")
-    await tools.write("workspace/fetch_test_payload.json", '{"from_file":"yes"}',
+    await tools.write("/home/daytona/workspace/fetch_test_payload.json", '{"from_file":"yes"}',
                       **ctx)
     r = await tools.fetch(
         url="https://httpbin.org/post",
         method="POST",
         headers='{"Content-Type": "application/json"}',
-        body="@workspace/fetch_test_payload.json",
-        output="@workspace/fetch_test_post_result.json",
+        body="@/home/daytona/workspace/fetch_test_payload.json",
+        output="@/home/daytona/workspace/fetch_test_post_result.json",
         **ctx,
     )
     R.check("file POST returns HTTP 200", "HTTP 200" in r, r[:300])
     R.check("file POST writes output", "Written to" in r, r[:300])
 
     verify = await tools.bash(
-        "python3 -c 'import json; d=json.load(open(\"workspace/fetch_test_post_result.json\")); print(d[\"data\"])'",
+        "python3 -c 'import json; d=json.load(open(\"/home/daytona/workspace/fetch_test_post_result.json\")); print(d[\"data\"])'",
         **ctx,
     )
     R.check("file POST body was sent correctly", "from_file" in verify, verify[:200])
@@ -708,7 +708,7 @@ async def test_int_fetch(R: Results, tools: Tools, user: dict):
     print("\n── fetch: redirect followed ──")
     r = await tools.fetch(
         url="https://httpbin.org/redirect/2",
-        output="@workspace/fetch_test_redirect.json",
+        output="@/home/daytona/workspace/fetch_test_redirect.json",
         **ctx,
     )
     R.check("redirect returns HTTP 200", "HTTP 200" in r, r[:300])
@@ -717,7 +717,7 @@ async def test_int_fetch(R: Results, tools: Tools, user: dict):
     print("\n── fetch: 404 error ──")
     r = await tools.fetch(
         url="https://httpbin.org/status/404",
-        output="@workspace/fetch_test_404.txt",
+        output="@/home/daytona/workspace/fetch_test_404.txt",
         **ctx,
     )
     R.check("404 returns HTTP 404", "HTTP 404" in r, r[:300])
@@ -753,7 +753,7 @@ async def test_int_fetch(R: Results, tools: Tools, user: dict):
         r = await tools.fetch(
             url="https://httpbin.org/post",
             method="POST",
-            body="@workspace/nonexistent_body.txt",
+            body="@/home/daytona/workspace/nonexistent_body.txt",
             **ctx,
         )
         R.check("missing @body file rejected", "Error" in r and "not found" in r.lower(), r[:300])
@@ -860,7 +860,7 @@ async def test_int_fetch(R: Results, tools: Tools, user: dict):
 
     # cleanup
     await tools.bash(
-        "rm -f workspace/fetch_test_*.json workspace/fetch_test_*.txt workspace/fetch_test_payload.json",
+        "rm -f /home/daytona/workspace/fetch_test_*.json /home/daytona/workspace/fetch_test_*.txt /home/daytona/workspace/fetch_test_payload.json",
         **ctx,
     )
 

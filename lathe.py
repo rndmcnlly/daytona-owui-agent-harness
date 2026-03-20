@@ -157,6 +157,16 @@ def _get_email(user: dict) -> str:
     return email
 
 
+def _require_abs_path(path: str, param_name: str = "path") -> str | None:
+    """Return an error string if *path* is not absolute, else None."""
+    if not path.startswith("/"):
+        return (
+            f"Error: {param_name} must be an absolute path "
+            f"(e.g. /home/daytona/workspace/file.txt). Got: {path}"
+        )
+    return None
+
+
 # ── output truncation (tail-biased, mirrors Pi's design) ────────────
 
 _MAX_LINES = 2000
@@ -567,13 +577,13 @@ class Tools:
             sandbox egress restrictions. Uses a @-prefix convention (like
             curl) to distinguish file paths from inline content:
 
-              body="@workspace/req.json"   — read request body from file
-              body={"query":"test"}         — send literal JSON as body
+              body="@/home/daytona/workspace/req.json"   — read request body from file
+              body={"query":"test"}                      — send literal JSON as body
 
-              output="@workspace/resp.json" — write response body to file
-              output="inline"               — return body in context
-              output="inline:1024"          — return body truncated to 1024 bytes
-              output=""                     — discard body (default)
+              output="@/home/daytona/workspace/resp.json" — write response body to file
+              output="inline"                             — return body in context
+              output="inline:1024"                        — return body truncated to 1024 bytes
+              output=""                                   — discard body (default)
 
               include_response_headers="important"  — content-type, content-length, location, rate-limit (default)
               include_response_headers="all"        — every response header
@@ -601,26 +611,26 @@ class Tools:
 
             ```
             fetch(url="https://example.com/api/data",
-                  output="@workspace/data.json")
-            read("workspace/data.json")
+                  output="@/home/daytona/workspace/data.json")
+            read("/home/daytona/workspace/data.json")
             ```
 
             ## POST with a file body
 
             ```
-            write("workspace/payload.json", {"big": "data..."})
+            write("/home/daytona/workspace/payload.json", {"big": "data..."})
             fetch(url="https://api.example.com/upload",
                   method="POST",
                   headers={"Content-Type": "application/json"},
-                  body="@workspace/payload.json",
-                  output="@workspace/results.json")
+                  body="@/home/daytona/workspace/payload.json",
+                  output="@/home/daytona/workspace/results.json")
             ```
 
             ## Download a binary artifact
 
             ```
             fetch(url="https://example.com/model.tar.gz",
-                  output="@workspace/model.tar.gz")
+                  output="@/home/daytona/workspace/model.tar.gz")
             bash("tar xzf model.tar.gz", workdir="/home/daytona/workspace")
             ```
 
@@ -1307,11 +1317,14 @@ class Tools:
     ) -> str:
         """
         Read a file from the sandbox. Returns numbered lines.
-        :param path: Absolute path or relative to /home/daytona (e.g. workspace/main.py).
+        :param path: Absolute path (e.g. /home/daytona/workspace/main.py).
         :param offset: Starting line number (1-indexed, default: 1).
         :param limit: Max lines to return (default: 2000).
         """
         async def _run(client):
+            err = _require_abs_path(path)
+            if err:
+                return err
             email = _get_email(__user__)
             sandbox_id, _sb_warning = await _ensure_sandbox(self.valves, email, client, __event_emitter__)
 
@@ -1363,10 +1376,13 @@ class Tools:
     ) -> str:
         """
         Write a file to the sandbox (created if it doesn't exist, parents auto-created).
-        :param path: Absolute path or relative to /home/daytona (e.g. workspace/main.py).
+        :param path: Absolute path (e.g. /home/daytona/workspace/main.py).
         :param content: The full file content to write.
         """
         async def _run(client):
+            err = _require_abs_path(path)
+            if err:
+                return err
             email = _get_email(__user__)
             sandbox_id, _sb_warning = await _ensure_sandbox(self.valves, email, client, __event_emitter__)
 
@@ -1411,12 +1427,15 @@ class Tools:
     ) -> str:
         """
         Edit a file by exact string replacement. Fails on ambiguous matches unless replace_all=true.
-        :param path: Absolute path or relative to /home/daytona (e.g. workspace/main.py).
+        :param path: Absolute path (e.g. /home/daytona/workspace/main.py).
         :param old_string: Exact text to find (must match including whitespace).
         :param new_string: The replacement text.
         :param replace_all: Replace all occurrences (default: false).
         """
         async def _run(client):
+            err = _require_abs_path(path)
+            if err:
+                return err
             email = _get_email(__user__)
             sandbox_id, _sb_warning = await _ensure_sandbox(self.valves, email, client, __event_emitter__)
 
@@ -1573,8 +1592,8 @@ class Tools:
         :param url: The URL to fetch (http or https).
         :param method: HTTP method: GET, POST, PUT, DELETE, PATCH, HEAD (default: GET).
         :param headers: JSON object of extra request headers, e.g. {"Accept": "text/html"}.
-        :param body: Request body. "@path" reads from sandbox file; bare string is sent literally. Empty = no body.
-        :param output: Response body handling. "@path" writes to sandbox file; "inline" returns body in context; "inline:N" truncates to N bytes; empty = discard (metadata only).
+        :param body: Request body. "@/absolute/path" reads from sandbox file; bare string is sent literally. Empty = no body.
+        :param output: Response body handling. "@/absolute/path" writes to sandbox file; "inline" returns body in context; "inline:N" truncates to N bytes; empty = discard (metadata only).
         :param filter: Post-process HTML responses: "markdown" (convert to markdown), "links" (extract all links), "meta" (title + description + og tags). Empty = no filtering.
         :param include_response_headers: How many response headers to show: "none", "important" (default — content-type, content-length, location, etc.), or "all".
         :param verify_ssl: Verify TLS certificates. Set false for self-signed certs (default: true).
@@ -1605,6 +1624,9 @@ class Tools:
                 if body.startswith("@"):
                     # Read from sandbox file
                     body_path = body[1:]
+                    err = _require_abs_path(body_path, "body (after @)")
+                    if err:
+                        return err
                     await _emit(__event_emitter__, f"Reading request body from {body_path}...")
                     resp = await client.get(
                         _toolbox(self.valves, sandbox_id, "/files/download"),
@@ -1629,6 +1651,9 @@ class Tools:
                 if output.startswith("@"):
                     output_mode = "file"
                     output_path = output[1:]
+                    err = _require_abs_path(output_path, "output (after @)")
+                    if err:
+                        return err
                 elif out_stripped == "inline" or out_stripped.startswith("inline:"):
                     output_mode = "inline"
                     if ":" in out_stripped:
@@ -1639,10 +1664,12 @@ class Tools:
                         except ValueError:
                             return "Error: invalid inline limit — use output=\"inline:1024\" (bytes)"
                 else:
-                    # Treat any other non-empty string as a file path
-                    # (backwards-compatible with bare paths)
-                    output_mode = "file"
-                    output_path = output
+                    return (
+                        f"Error: unrecognized output mode \"{output}\". "
+                        f"Use \"@/absolute/path\" to write to file, "
+                        f"\"inline\" or \"inline:N\" to return body in context, "
+                        f"or omit for metadata only."
+                    )
 
             # ── make the HTTP request from a dedicated client ────────
             # Separate from the Daytona API client: different trust
