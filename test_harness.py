@@ -153,69 +153,70 @@ async def test_unit_truncate(R: Results):
 # ── Integration tests (need sandbox) ────────────────────────────────
 
 async def test_int_bash(R: Results, tools: Tools, user: dict):
+    ctx = dict(__user__=user, __event_emitter__=mock_emitter)
 
     # These are all independent — run concurrently
     async def t_simple():
         print("\n── bash: simple command ──")
-        r = await tools.bash("echo hello world", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.bash("echo hello world", **ctx)
         R.check("echo returns output", "hello world" in r, r[:200])
 
     async def t_compound():
         print("\n── bash: compound command ──")
-        r = await tools.bash("echo one && echo two && echo three", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.bash("echo one && echo two && echo three", **ctx)
         R.check("compound && works", "one" in r and "two" in r and "three" in r, r[:200])
 
     async def t_pipes():
         print("\n── bash: pipes ──")
-        r = await tools.bash("echo 'hello world' | wc -w", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.bash("echo 'hello world' | wc -w", **ctx)
         R.check("pipe works", "2" in r, r[:200])
 
     async def t_exit():
         print("\n── bash: exit code ──")
-        r = await tools.bash("exit 42", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.bash("exit 42", **ctx)
         R.check("non-zero exit reported", "Exit code: 42" in r, r[:200])
 
     async def t_workdir():
         print("\n── bash: working directory ──")
-        r = await tools.bash("pwd", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.bash("pwd", **ctx)
         R.check("default cwd is /home/daytona/workspace", "/home/daytona/workspace" in r, r[:200])
-        r = await tools.bash("pwd", workdir="/tmp", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.bash("pwd", workdir="/tmp", **ctx)
         R.check("custom cwd works", "/tmp" in r, r[:200])
 
     async def t_quoting():
         print("\n── bash: quoted flag values ──")
-        r = await tools.bash('echo "--state" "open" | cat', __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.bash('echo "--state" "open" | cat', **ctx)
         R.check("quoted flag values pass through", "--state" in r and "open" in r, r[:200])
 
         print("\n── bash: single quotes ──")
-        r = await tools.bash("echo 'hello world'", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.bash("echo 'hello world'", **ctx)
         R.check("single quotes work", "hello world" in r, r[:200])
 
         print("\n── bash: mixed quoting ──")
-        r = await tools.bash("""echo "it's a 'test'" && echo 'say "hello"'""", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.bash("""echo "it's a 'test'" && echo 'say "hello"'""", **ctx)
         R.check("mixed quotes work", "it's a 'test'" in r and 'say "hello"' in r, r[:200])
 
         print("\n── bash: backslashes ──")
-        r = await tools.bash(r"echo 'back\slash'", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.bash(r"echo 'back\slash'", **ctx)
         R.check("backslashes preserved", "back\\slash" in r, r[:200])
 
     async def t_vars():
         print("\n── bash: dollar signs and variables ──")
-        r = await tools.bash('FOO=bar && echo "val=$FOO"', __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.bash('FOO=bar && echo "val=$FOO"', **ctx)
         R.check("variable expansion works", "val=bar" in r, r[:200])
 
     async def t_set_e():
         print("\n── bash: set -e aborts on error ──")
-        r = await tools.bash("false\necho should-not-reach", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.bash("false\necho should-not-reach", **ctx)
         R.check("set -e aborts on first failure", "Exit code:" in r, r[:200])
         R.check("second command did not run", "should-not-reach" not in r, r[:200])
 
         print("\n── bash: pipefail catches pipe errors ──")
-        r = await tools.bash("false | cat", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.bash("false | cat", **ctx)
         R.check("pipefail reports failure", "Exit code:" in r, r[:200])
 
         print("\n── bash: || true overrides set -e ──")
-        r = await tools.bash("false || true\necho survived", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.bash("false || true\necho survived", **ctx)
         R.check("|| true suppresses abort", "survived" in r, r[:200])
 
     # First call creates sandbox; after that everything can fan out
@@ -224,14 +225,15 @@ async def test_int_bash(R: Results, tools: Tools, user: dict):
 
 
 async def test_int_write_read_edit(R: Results, tools: Tools, user: dict):
+    ctx = dict(__user__=user, __event_emitter__=mock_emitter)
 
     print("\n── write: create file ──")
     test_content = "line one\nline two\nline three\n"
-    r = await tools.write("workspace/test_file.txt", test_content, __user__=user, __event_emitter__=mock_emitter)
+    r = await tools.write("workspace/test_file.txt", test_content, **ctx)
     R.check("write reports success", "Wrote" in r and "test_file.txt" in r, r[:200])
 
     print("\n── read: full file ──")
-    r = await tools.read("workspace/test_file.txt", __user__=user, __event_emitter__=mock_emitter)
+    r = await tools.read("workspace/test_file.txt", **ctx)
     R.check("read returns content", "line one" in r and "line two" in r, r[:200])
     R.check("read has line numbers", "1: line one" in r, r[:200])
     R.check("read shows total lines", "3 lines total" in r, r[:200])
@@ -239,72 +241,73 @@ async def test_int_write_read_edit(R: Results, tools: Tools, user: dict):
     # Independent reads
     async def t_offset():
         print("\n── read: offset and limit ──")
-        r = await tools.read("workspace/test_file.txt", offset=2, limit=1, __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.read("workspace/test_file.txt", offset=2, limit=1, **ctx)
         R.check("offset/limit works", "2: line two" in r, r[:200])
         R.check("respects limit", "line three" not in r, r[:200])
 
     async def t_notfound():
         print("\n── read: file not found ──")
-        r = await tools.read("workspace/nonexistent.txt", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.read("workspace/nonexistent.txt", **ctx)
         R.check("reports file not found", "Error" in r or "not found" in r.lower(), r[:200])
 
     await asyncio.gather(t_offset(), t_notfound())
 
     print("\n── edit: single replacement ──")
-    r = await tools.edit("workspace/test_file.txt", "line two", "LINE TWO EDITED", __user__=user, __event_emitter__=mock_emitter)
+    r = await tools.edit("workspace/test_file.txt", "line two", "LINE TWO EDITED", **ctx)
     R.check("edit reports success", "Replaced 1" in r, r[:200])
 
-    r = await tools.read("workspace/test_file.txt", __user__=user, __event_emitter__=mock_emitter)
+    r = await tools.read("workspace/test_file.txt", **ctx)
     R.check("edit persisted", "LINE TWO EDITED" in r, r[:200])
     R.check("other lines untouched", "line one" in r and "line three" in r, r[:200])
 
     # Independent edit tests
     async def t_edit_notfound():
         print("\n── edit: old_string not found ──")
-        r = await tools.edit("workspace/test_file.txt", "this text does not exist", "replacement", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.edit("workspace/test_file.txt", "this text does not exist", "replacement", **ctx)
         R.check("reports not found", "not found" in r.lower(), r[:200])
 
     async def t_edit_multi():
         print("\n── edit: multiple matches without replace_all ──")
-        await tools.write("workspace/dup_test.txt", "aaa\nbbb\naaa\nbbb\naaa\n", __user__=user, __event_emitter__=mock_emitter)
-        r = await tools.edit("workspace/dup_test.txt", "aaa", "zzz", __user__=user, __event_emitter__=mock_emitter)
+        await tools.write("workspace/dup_test.txt", "aaa\nbbb\naaa\nbbb\naaa\n", **ctx)
+        r = await tools.edit("workspace/dup_test.txt", "aaa", "zzz", **ctx)
         R.check("rejects ambiguous edit", "3 matches" in r or "multiple" in r.lower(), r[:200])
 
         print("\n── edit: replace_all ──")
-        r = await tools.edit("workspace/dup_test.txt", "aaa", "zzz", replace_all=True, __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.edit("workspace/dup_test.txt", "aaa", "zzz", replace_all=True, **ctx)
         R.check("replace_all reports count", "Replaced 3" in r, r[:200])
-        r = await tools.read("workspace/dup_test.txt", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.read("workspace/dup_test.txt", **ctx)
         R.check("replace_all applied", "aaa" not in r and "zzz" in r, r[:200])
 
     async def t_edit_missing():
         print("\n── edit: file not found ──")
-        r = await tools.edit("workspace/nonexistent.txt", "foo", "bar", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.edit("workspace/nonexistent.txt", "foo", "bar", **ctx)
         R.check("edit on missing file errors", "Error" in r or "not found" in r.lower(), r[:200])
 
     async def t_nested():
         print("\n── write: nested path ──")
-        r = await tools.write("workspace/deep/nested/dir/file.txt", "nested content\n", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.write("workspace/deep/nested/dir/file.txt", "nested content\n", **ctx)
         R.check("write to nested path succeeds", "Wrote" in r, r[:200])
-        r = await tools.read("workspace/deep/nested/dir/file.txt", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.read("workspace/deep/nested/dir/file.txt", **ctx)
         R.check("nested file readable", "nested content" in r, r[:200])
 
     await asyncio.gather(t_edit_notfound(), t_edit_multi(), t_edit_missing(), t_nested())
 
     # cleanup
-    await tools.bash("rm -rf workspace/test_file.txt workspace/dup_test.txt workspace/deep", __user__=user, __event_emitter__=mock_emitter)
+    await tools.bash("rm -rf workspace/test_file.txt workspace/dup_test.txt workspace/deep", **ctx)
 
 
 async def test_int_onboard(R: Results, tools: Tools, user: dict):
+    ctx = dict(__user__=user, __event_emitter__=mock_emitter)
 
-    await tools.bash("rm -rf /home/daytona/workspace/test_project /home/daytona/workspace/empty_project", __user__=user, __event_emitter__=mock_emitter)
+    await tools.bash("rm -rf /home/daytona/workspace/test_project /home/daytona/workspace/empty_project", **ctx)
 
     print("\n── onboard: missing context ──")
-    r = await tools.onboard("/home/daytona/workspace/empty_project", __user__=user, __event_emitter__=mock_emitter)
+    r = await tools.onboard("/home/daytona/workspace/empty_project", **ctx)
     R.check("fails without AGENTS.md or .agents/", "Error" in r, r[:200])
 
     print("\n── onboard: AGENTS.md only ──")
-    await tools.write("workspace/test_project/AGENTS.md", "# Test Agent\nYou are a helpful test agent.\n", __user__=user, __event_emitter__=mock_emitter)
-    r = await tools.onboard("/home/daytona/workspace/test_project", __user__=user, __event_emitter__=mock_emitter)
+    await tools.write("workspace/test_project/AGENTS.md", "# Test Agent\nYou are a helpful test agent.\n", **ctx)
+    r = await tools.onboard("/home/daytona/workspace/test_project", **ctx)
     R.check("returns AGENTS.md content", "helpful test agent" in r, r[:300])
     R.check("no skills section when none exist", "Available Skills" not in r, r[:300])
 
@@ -312,25 +315,26 @@ async def test_int_onboard(R: Results, tools: Tools, user: dict):
     await tools.write(
         "workspace/test_project/.agents/skills/test-skill/SKILL.md",
         "---\nname: test-skill\ndescription: A skill for testing things.\n---\n\n# Test Skill\nDetailed instructions here.\n",
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
-    r = await tools.onboard("/home/daytona/workspace/test_project", __user__=user, __event_emitter__=mock_emitter)
+    r = await tools.onboard("/home/daytona/workspace/test_project", **ctx)
     R.check("returns AGENTS.md", "helpful test agent" in r, r[:500])
     R.check("lists skill name", "test-skill" in r, r[:500])
     R.check("lists skill description", "testing things" in r, r[:500])
     R.check("includes SKILL.md path", "SKILL.md" in r, r[:500])
     R.check("does NOT include skill body", "Detailed instructions here" not in r, r[:500])
 
-    await tools.bash("rm -rf /home/daytona/workspace/test_project /home/daytona/workspace/empty_project", __user__=user, __event_emitter__=mock_emitter)
+    await tools.bash("rm -rf /home/daytona/workspace/test_project /home/daytona/workspace/empty_project", **ctx)
 
 
 async def test_int_truncation(R: Results, tools: Tools, user: dict):
+    ctx = dict(__user__=user, __event_emitter__=mock_emitter)
     import re
 
     print("\n── bash: output truncation with log file ──")
     result = await tools.bash(
         "for i in $(seq 1 3000); do echo \"output line $i\"; done",
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     R.check("truncated output has notice", "[Showing lines" in result, result[-200:])
     R.check("notice mentions log file", "/tmp/cmd/" in result, result[-200:])
@@ -341,8 +345,8 @@ async def test_int_truncation(R: Results, tools: Tools, user: dict):
     if spill_match:
         spill_path = spill_match.group(0)
         verify, head_result = await asyncio.gather(
-            tools.bash(f"wc -l < {spill_path}", __user__=user, __event_emitter__=mock_emitter),
-            tools.bash(f"head -n 3 {spill_path}", __user__=user, __event_emitter__=mock_emitter),
+            tools.bash(f"wc -l < {spill_path}", **ctx),
+            tools.bash(f"head -n 3 {spill_path}", **ctx),
         )
         R.check("log file has all 3000 lines", "3000" in verify, verify.strip())
         R.check("can retrieve early lines from log file", "output line 1" in head_result, head_result[:100])
@@ -350,32 +354,33 @@ async def test_int_truncation(R: Results, tools: Tools, user: dict):
         R.check("log file path found in notice", False, "no path match found")
 
     print("\n── bash: small output NOT truncated ──")
-    result = await tools.bash("echo hello", __user__=user, __event_emitter__=mock_emitter)
+    result = await tools.bash("echo hello", **ctx)
     R.check("small output has no truncation notice", "[Showing lines" not in result, result[:200])
 
 
 async def test_int_bash_sessions(R: Results, tools: Tools, user: dict):
+    ctx = dict(__user__=user, __event_emitter__=mock_emitter)
     import re
 
     print("\n── bash sessions: state directory layout ──")
     # The command itself creates /tmp/cmd/<uuid>/ — so we list dirs,
     # then identify the one that contains our sentinel in its log.
     result = await tools.bash(
-        "echo state-dir-sentinel-42", __user__=user, __event_emitter__=mock_emitter,
+        "echo state-dir-sentinel-42", **ctx,
     )
     R.check("simple command returns output", "state-dir-sentinel-42" in result, result[:200])
 
     # Find the state dir whose log contains our sentinel
     find_result = await tools.bash(
         "grep -rl 'state-dir-sentinel-42' /tmp/cmd/*/log 2>/dev/null | head -1",
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     sentinel_log = find_result.strip()
     sentinel_dir = sentinel_log.rsplit("/", 1)[0] if "/log" in sentinel_log else ""
 
     if sentinel_dir:
         dir_result = await tools.bash(
-            f"ls {sentinel_dir}/", __user__=user, __event_emitter__=mock_emitter,
+            f"ls {sentinel_dir}/", **ctx,
         )
         R.check("state dir has log file", "log" in dir_result, dir_result[:200])
         R.check("state dir has exit file", "exit" in dir_result, dir_result[:200])
@@ -383,38 +388,38 @@ async def test_int_bash_sessions(R: Results, tools: Tools, user: dict):
         R.check("state dir has pid file", "pid" in dir_result, dir_result[:200])
 
         exit_result = await tools.bash(
-            f"cat {sentinel_dir}/exit", __user__=user, __event_emitter__=mock_emitter,
+            f"cat {sentinel_dir}/exit", **ctx,
         )
         R.check("exit file contains 0 for success", exit_result.strip() == "0", exit_result.strip())
     else:
         R.check("found sentinel state dir", False, f"grep returned: {find_result[:200]}")
 
     print("\n── bash sessions: non-zero exit code in state dir ──")
-    fail_result = await tools.bash("echo fail-sentinel-99 && exit 7", __user__=user, __event_emitter__=mock_emitter)
+    fail_result = await tools.bash("echo fail-sentinel-99 && exit 7", **ctx)
     R.check("non-zero exit reported", "Exit code: 7" in fail_result, fail_result[:200])
 
     find_fail = await tools.bash(
         "grep -rl 'fail-sentinel-99' /tmp/cmd/*/log 2>/dev/null | head -1",
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     fail_dir = find_fail.strip().rsplit("/", 1)[0] if "/log" in find_fail.strip() else ""
     if fail_dir:
         exit_result = await tools.bash(
-            f"cat {fail_dir}/exit", __user__=user, __event_emitter__=mock_emitter,
+            f"cat {fail_dir}/exit", **ctx,
         )
         R.check("exit file contains 7 for failure", exit_result.strip() == "7", exit_result.strip())
     else:
         R.check("found fail sentinel state dir", False, f"grep returned: {find_fail[:200]}")
 
     print("\n── bash sessions: log file captures output ──")
-    await tools.bash("echo logtest-alpha && echo logtest-beta", __user__=user, __event_emitter__=mock_emitter)
+    await tools.bash("echo logtest-alpha && echo logtest-beta", **ctx)
     find_log = await tools.bash(
         "grep -rl 'logtest-alpha' /tmp/cmd/*/log 2>/dev/null | head -1",
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     log_path = find_log.strip()
     if log_path:
-        log_result = await tools.bash(f"cat {log_path}", __user__=user, __event_emitter__=mock_emitter)
+        log_result = await tools.bash(f"cat {log_path}", **ctx)
         R.check("log file has first line", "logtest-alpha" in log_result, log_result[:200])
         R.check("log file has second line", "logtest-beta" in log_result, log_result[:200])
     else:
@@ -425,7 +430,7 @@ async def test_int_bash_sessions(R: Results, tools: Tools, user: dict):
     bg_result = await tools.bash(
         "echo bg-start && sleep 5 && echo bg-done",
         foreground_seconds=2,
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     R.check("short timeout triggers backgrounding", "Backgrounded" in bg_result, bg_result[:300])
     R.check("background descriptor has CMD=", "CMD=" in bg_result, bg_result[:300])
@@ -442,7 +447,7 @@ async def test_int_bash_sessions(R: Results, tools: Tools, user: dict):
             f"while [ ! -f {bg_cmd_dir}/exit ]; do sleep 1; done; "
             f"cat {bg_cmd_dir}/exit; echo '---'; cat {bg_cmd_dir}/log",
             foreground_seconds=30,
-            __user__=user, __event_emitter__=mock_emitter,
+            **ctx,
         )
         R.check("can wait for backgrounded command", "bg-done" in wait_result, wait_result[:300])
         R.check("backgrounded command exit code is 0", "\n0\n" in wait_result or wait_result.strip().startswith("0"), wait_result[:100])
@@ -454,16 +459,17 @@ async def test_int_bash_sessions(R: Results, tools: Tools, user: dict):
     fg_result = await tools.bash(
         "sleep 3 && echo fg-completed",
         foreground_seconds=60,
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     R.check("long timeout avoids backgrounding", "fg-completed" in fg_result, fg_result[:200])
     R.check("no background descriptor", "Backgrounded" not in fg_result, fg_result[:200])
 
     # Clean up
-    await tools.bash("rm -rf /tmp/cmd", __user__=user, __event_emitter__=mock_emitter)
+    await tools.bash("rm -rf /tmp/cmd", **ctx)
 
 
 async def test_int_env_vars(R: Results, tools: Tools, user: dict):
+    ctx = dict(__user__=user, __event_emitter__=mock_emitter)
 
     class FakeUserValves:
         env_vars = '{"LATHE_TEST_SECRET":"hunter2","LATHE_TEST_GREETING":"hello world"}'
@@ -494,7 +500,7 @@ async def test_int_env_vars(R: Results, tools: Tools, user: dict):
 
     async def t_no_valves():
         print("\n── bash: no valves key no-op ──")
-        r = await tools.bash("echo still_works", __user__=user, __event_emitter__=mock_emitter)
+        r = await tools.bash("echo still_works", **ctx)
         R.check("no valves key still runs", "still_works" in r, r[:200])
 
     await asyncio.gather(t_basic(), t_tricky(), t_empty(), t_no_valves())
@@ -623,12 +629,13 @@ async def test_int_ensure_sandbox(R: Results, tools: Tools, user: dict):
 
 
 async def test_int_fetch(R: Results, tools: Tools, user: dict):
+    ctx = dict(__user__=user, __event_emitter__=mock_emitter)
 
     print("\n── fetch: simple GET to file ──")
     r = await tools.fetch(
         url="https://httpbin.org/get",
         output="@workspace/fetch_test_get.json",
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     R.check("GET returns HTTP 200", "HTTP 200" in r, r[:300])
     R.check("GET writes to file", "Written to" in r and "fetch_test_get.json" in r, r[:300])
@@ -636,14 +643,14 @@ async def test_int_fetch(R: Results, tools: Tools, user: dict):
 
     # Verify the file actually landed in the sandbox
     verify = await tools.bash("cat workspace/fetch_test_get.json | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d[\"url\"])'",
-                              __user__=user, __event_emitter__=mock_emitter)
+                              **ctx)
     R.check("GET response body is valid JSON with url field", "httpbin.org/get" in verify, verify[:200])
 
     print("\n── fetch: inline GET (small response in context) ──")
     r = await tools.fetch(
         url="https://httpbin.org/get",
         output="inline",
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     R.check("inline GET returns HTTP 200", "HTTP 200" in r, r[:300])
     R.check("inline GET has response body in context", "response body" in r.lower(), r[:300])
@@ -653,7 +660,7 @@ async def test_int_fetch(R: Results, tools: Tools, user: dict):
     r = await tools.fetch(
         url="https://httpbin.org/get",
         method="HEAD",
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     R.check("HEAD returns HTTP 200", "HTTP 200" in r, r[:300])
     R.check("HEAD says no body", "No body" in r or "HEAD request" in r, r[:300])
@@ -665,35 +672,35 @@ async def test_int_fetch(R: Results, tools: Tools, user: dict):
         headers='{"Content-Type": "application/json"}',
         body='{"hello":"world"}',
         output="inline",
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     R.check("inline POST returns HTTP 200", "HTTP 200" in r, r[:300])
     R.check("inline POST echoes body", "hello" in r and "world" in r, r[:500])
 
     print("\n── fetch: POST with @file body ──")
     await tools.write("workspace/fetch_test_payload.json", '{"from_file":"yes"}',
-                      __user__=user, __event_emitter__=mock_emitter)
+                      **ctx)
     r = await tools.fetch(
         url="https://httpbin.org/post",
         method="POST",
         headers='{"Content-Type": "application/json"}',
         body="@workspace/fetch_test_payload.json",
         output="@workspace/fetch_test_post_result.json",
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     R.check("file POST returns HTTP 200", "HTTP 200" in r, r[:300])
     R.check("file POST writes output", "Written to" in r, r[:300])
 
     verify = await tools.bash(
         "python3 -c 'import json; d=json.load(open(\"workspace/fetch_test_post_result.json\")); print(d[\"data\"])'",
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     R.check("file POST body was sent correctly", "from_file" in verify, verify[:200])
 
     print("\n── fetch: discard mode (no output) ──")
     r = await tools.fetch(
         url="https://httpbin.org/get",
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     R.check("discard returns metadata", "HTTP 200" in r, r[:300])
     R.check("discard says discarded", "Discarded" in r, r[:300])
@@ -702,7 +709,7 @@ async def test_int_fetch(R: Results, tools: Tools, user: dict):
     r = await tools.fetch(
         url="https://httpbin.org/redirect/2",
         output="@workspace/fetch_test_redirect.json",
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     R.check("redirect returns HTTP 200", "HTTP 200" in r, r[:300])
     R.check("redirect shows final URL", "Redirected-To" in r, r[:500])
@@ -711,7 +718,7 @@ async def test_int_fetch(R: Results, tools: Tools, user: dict):
     r = await tools.fetch(
         url="https://httpbin.org/status/404",
         output="@workspace/fetch_test_404.txt",
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     R.check("404 returns HTTP 404", "HTTP 404" in r, r[:300])
 
@@ -720,7 +727,7 @@ async def test_int_fetch(R: Results, tools: Tools, user: dict):
         r = await tools.fetch(
             url="https://httpbin.org/get",
             method="FOOBAR",
-            __user__=user, __event_emitter__=mock_emitter,
+            **ctx,
         )
         R.check("invalid method rejected", "Error" in r and "FOOBAR" in r, r[:300])
 
@@ -728,7 +735,7 @@ async def test_int_fetch(R: Results, tools: Tools, user: dict):
         print("\n── fetch: invalid URL ──")
         r = await tools.fetch(
             url="not-a-url",
-            __user__=user, __event_emitter__=mock_emitter,
+            **ctx,
         )
         R.check("invalid URL rejected", "Error" in r and "http" in r.lower(), r[:300])
 
@@ -737,7 +744,7 @@ async def test_int_fetch(R: Results, tools: Tools, user: dict):
         r = await tools.fetch(
             url="https://httpbin.org/get",
             headers="not json",
-            __user__=user, __event_emitter__=mock_emitter,
+            **ctx,
         )
         R.check("invalid headers rejected", "Error" in r and "JSON" in r, r[:300])
 
@@ -747,82 +754,181 @@ async def test_int_fetch(R: Results, tools: Tools, user: dict):
             url="https://httpbin.org/post",
             method="POST",
             body="@workspace/nonexistent_body.txt",
-            __user__=user, __event_emitter__=mock_emitter,
+            **ctx,
         )
         R.check("missing @body file rejected", "Error" in r and "not found" in r.lower(), r[:300])
 
     await asyncio.gather(t_bad_method(), t_bad_url(), t_bad_headers(), t_bad_body_file())
 
+    # ── include_response_headers modes ──
+
+    print("\n── fetch: include_response_headers='none' ──")
+    r = await tools.fetch(
+        url="https://httpbin.org/get",
+        include_response_headers="none",
+        **ctx,
+    )
+    R.check("headers=none suppresses headers block", "Response headers" not in r, r[:500])
+
+    print("\n── fetch: include_response_headers='all' ──")
+    r = await tools.fetch(
+        url="https://httpbin.org/get",
+        include_response_headers="all",
+        **ctx,
+    )
+    R.check("headers=all shows headers block", "Response headers" in r, r[:500])
+    # httpbin returns server/access-control headers that 'important' would hide
+    R.check("headers=all includes non-important headers", "access-control" in r.lower() or "server" in r.lower(), r[:800])
+
+    # ── inline:N truncation ──
+
+    print("\n── fetch: output='inline:32' truncation ──")
+    r = await tools.fetch(
+        url="https://httpbin.org/get",
+        output="inline:32",
+        **ctx,
+    )
+    R.check("inline:N returns HTTP 200", "HTTP 200" in r, r[:300])
+    R.check("inline:N shows truncated", "truncated" in r.lower(), r[:500])
+    R.check("inline:N has response body", "response body" in r.lower(), r[:300])
+
+    # ── filter=markdown ──
+
+    print("\n── fetch: filter='markdown' on HTML page ──")
+    r = await tools.fetch(
+        url="https://httpbin.org/html",
+        filter="markdown",
+        output="inline",
+        **ctx,
+    )
+    R.check("filter=markdown returns HTTP 200", "HTTP 200" in r, r[:300])
+    R.check("filter=markdown has response body", "response body" in r.lower(), r[:300])
+    # httpbin /html contains "Herman Melville" in the text
+    R.check("filter=markdown contains page content", "Melville" in r or "melville" in r.lower(), r[:2000])
+
+    print("\n── fetch: filter='links' ──")
+    r = await tools.fetch(
+        url="https://httpbin.org/links/5/0",
+        filter="links",
+        output="inline",
+        **ctx,
+    )
+    R.check("filter=links returns HTTP 200", "HTTP 200" in r, r[:300])
+    R.check("filter=links finds links", "links found" in r.lower(), r[:500])
+
+    print("\n── fetch: filter='meta' ──")
+    r = await tools.fetch(
+        url="https://httpbin.org/html",
+        filter="meta",
+        output="inline",
+        **ctx,
+    )
+    R.check("filter=meta returns HTTP 200", "HTTP 200" in r, r[:300])
+
+    # ── filter on non-HTML content warns but continues ──
+
+    print("\n── fetch: filter on JSON warns but continues ──")
+    r = await tools.fetch(
+        url="https://httpbin.org/get",
+        filter="markdown",
+        output="inline",
+        **ctx,
+    )
+    R.check("filter on JSON warns", "Warning" in r and "content-type" in r.lower(), r[:500])
+    R.check("filter on JSON still returns body", "response body" in r.lower(), r[:300])
+
+    # ── verify_ssl=False ──
+
+    print("\n── fetch: verify_ssl=False works ──")
+    r = await tools.fetch(
+        url="https://httpbin.org/get",
+        verify_ssl=False,
+        output="inline",
+        **ctx,
+    )
+    R.check("verify_ssl=False returns HTTP 200", "HTTP 200" in r, r[:300])
+
+    # ── invalid filter value ──
+
+    print("\n── fetch: invalid filter rejected ──")
+    r = await tools.fetch(
+        url="https://httpbin.org/get",
+        filter="bogus",
+        **ctx,
+    )
+    R.check("invalid filter rejected", "Error" in r and "bogus" in r, r[:300])
+
     # cleanup
     await tools.bash(
         "rm -f workspace/fetch_test_*.json workspace/fetch_test_*.txt workspace/fetch_test_payload.json",
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
 
 
 async def test_int_expose(R: Results, tools: Tools, user: dict):
+    ctx = dict(__user__=user, __event_emitter__=mock_emitter)
 
     print("\n── expose: invalid port (too low) ──")
-    r = await tools.expose(port=80, __user__=user, __event_emitter__=mock_emitter)
+    r = await tools.expose(port=80, **ctx)
     R.check("port 80 rejected", "Error" in r and "3000" in r, r[:200])
 
     print("\n── expose: invalid port (too high) ──")
-    r = await tools.expose(port=10000, __user__=user, __event_emitter__=mock_emitter)
+    r = await tools.expose(port=10000, **ctx)
     R.check("port 10000 rejected", "Error" in r and "9999" in r, r[:200])
 
     print("\n── expose: no port and no ssh ──")
-    r = await tools.expose(__user__=user, __event_emitter__=mock_emitter)
+    r = await tools.expose(**ctx)
     R.check("default args rejected", "Error" in r, r[:200])
 
     print("\n── expose: start a server then get URL ──")
     await tools.bash(
         "python3 -m http.server 8080 &",
-        __user__=user,
-        __event_emitter__=mock_emitter,
+        **ctx,
     )
     import asyncio as _asyncio
     await _asyncio.sleep(1)
 
-    r = await tools.expose(port=8080, __user__=user, __event_emitter__=mock_emitter)
+    r = await tools.expose(port=8080, **ctx)
     R.check("expose returns URL", "Public URL" in r, r[:300])
     R.check("URL contains https://", "https://" in r, r[:300])
     R.check("mentions 1 hour validity", "1 hour" in r, r[:300])
     R.check("mentions warning", "warning" in r.lower(), r[:300])
 
     # Clean up the background server
-    await tools.bash("pkill -f 'http.server 8080' || true", __user__=user, __event_emitter__=mock_emitter)
+    await tools.bash("pkill -f 'http.server 8080' || true", **ctx)
 
     print("\n── expose: SSH access ──")
-    r = await tools.expose(ssh=True, __user__=user, __event_emitter__=mock_emitter)
+    r = await tools.expose(ssh=True, **ctx)
     R.check("ssh returns command", "ssh" in r.lower(), r[:300])
     R.check("mentions validity", "60 min" in r, r[:300])
     R.check("contains ssh command block", "```" in r, r[:300])
 
 
 async def test_int_destroy(R: Results, tools: Tools, user: dict):
+    ctx = dict(__user__=user, __event_emitter__=mock_emitter)
     from lathe import _headers, VOLUME_MOUNT_PATH
 
     print("\n── destroy: safety guard (confirm=false) ──")
-    result = await tools.destroy(__user__=user, __event_emitter__=mock_emitter)
+    result = await tools.destroy(**ctx)
     R.check("default confirm=false aborts", "aborted" in result.lower(), result[:200])
     R.check("abort message mentions confirm", "confirm" in result.lower(), result[:200])
 
-    result = await tools.destroy(confirm=False, __user__=user, __event_emitter__=mock_emitter)
+    result = await tools.destroy(confirm=False, **ctx)
     R.check("explicit confirm=false aborts", "aborted" in result.lower(), result[:200])
 
     # Verify sandbox still exists after abort
-    result = await tools.bash("echo still_alive", __user__=user, __event_emitter__=mock_emitter)
+    result = await tools.bash("echo still_alive", **ctx)
     R.check("sandbox survives abort", "still_alive" in result, result[:200])
 
     print("\n── destroy: wipes sandbox but preserves volume ──")
     # Write a marker file to the volume before destroying
     result = await tools.bash(
         f"echo destroy_test > {VOLUME_MOUNT_PATH}/destroy_test.txt",
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     R.check("write marker to volume", "Error" not in result, result[:200])
 
-    result = await tools.destroy(confirm=True, __user__=user, __event_emitter__=mock_emitter)
+    result = await tools.destroy(confirm=True, **ctx)
     R.check("destroy reports success", "Destroyed" in result and "1 sandbox" in result, result[:200])
     R.check("destroy mentions volume intact", "intact" in result.lower(), result[:200])
 
@@ -843,25 +949,25 @@ async def test_int_destroy(R: Results, tools: Tools, user: dict):
     # bash() creates a fresh sandbox (with volume re-mounted)
     result = await tools.bash(
         f"cat {VOLUME_MOUNT_PATH}/destroy_test.txt",
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     R.check("volume data survives destroy", "destroy_test" in result, result[:200])
 
     print("\n── destroy: no sandbox to destroy ──")
-    result = await tools.destroy(confirm=True, __user__=user, __event_emitter__=mock_emitter)
+    result = await tools.destroy(confirm=True, **ctx)
     # First destroy the sandbox that was just created
     # Then try again with nothing left
-    result = await tools.destroy(confirm=True, __user__=user, __event_emitter__=mock_emitter)
+    result = await tools.destroy(confirm=True, **ctx)
     R.check("destroy with nothing reports no sandbox", "No sandbox found" in result, result[:200])
 
     print("\n── destroy: next tool call creates fresh sandbox ──")
-    result = await tools.bash("echo reborn", __user__=user, __event_emitter__=mock_emitter)
+    result = await tools.bash("echo reborn", **ctx)
     R.check("fresh sandbox works", "reborn" in result, result[:200])
 
     print("\n── final cleanup: destroy reborn sandbox ──")
     result = await tools.destroy(
         confirm=True,
-        __user__=user, __event_emitter__=mock_emitter,
+        **ctx,
     )
     R.check("final destroy succeeds", "Destroyed" in result, result[:200])
 
