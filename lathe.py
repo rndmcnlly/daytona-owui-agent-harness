@@ -2,16 +2,14 @@
 title: Lathe
 author: Adam Smith
 author_url: https://adamsmith.as
-description: Coding agent tools (lathe, bash, read, write, edit, attach, ingest, onboard, ssh, preview, fetch, destroy) backed by per-user sandbox VMs with transparent lifecycle management.
+description: Coding agent tools (lathe, bash, read, write, edit, onboard, expose, fetch, destroy) backed by per-user sandbox VMs with transparent lifecycle management.
 required_open_webui_version: 0.4.0
 requirements: httpx
-version: 0.8.0
+version: 0.9.0
 licence: MIT
 """
 
 import asyncio
-import base64
-import html as html_mod
 import inspect
 import io
 import json
@@ -21,7 +19,6 @@ import urllib.parse
 import uuid
 
 import httpx
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 
@@ -222,649 +219,8 @@ def _human_size(n: int) -> str:
     return f"{b:,.1f} TB"
 
 
-def _highlight_code(code: str, path: str) -> str:
-    """Syntax-highlight code to HTML spans using Pygments. Falls back to escaped plaintext."""
-    try:
-        from pygments import highlight
-        from pygments.lexers import get_lexer_for_filename, TextLexer
-        from pygments.formatters import HtmlFormatter
-
-        try:
-            lexer = get_lexer_for_filename(path, stripall=False)
-        except Exception:
-            lexer = TextLexer()
-
-        # Catppuccin Mocha-inspired color scheme via Pygments style overrides
-        formatter = HtmlFormatter(
-            nowrap=True,       # no <div>/<pre> wrapper, just inline spans
-            noclasses=True,    # use inline styles so no external CSS needed
-            style="monokai",   # dark base theme
-        )
-        return highlight(code, lexer, formatter)
-    except ImportError:
-        # Pygments not available -- plain escaped text
-        return html_mod.escape(code)
 
 
-# ── shared HTML/CSS/JS constants ─────────────────────────────────────
-
-_BASE_CSS = """\
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
-    font-size: 13px;
-    background: #1e1e2e;
-    color: #cdd6f4;
-  }
-  .header {
-    background: #313244;
-    padding: 8px 12px;
-    font-size: 12px;
-    color: #a6adc8;
-    border-bottom: 1px solid #45475a;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .header .filename { color: #89b4fa; font-weight: 600; }
-  .header .meta { color: #585b70; margin-left: auto; }
-  .header .actions { display: flex; gap: 4px; }
-  .header button {
-    background: transparent;
-    border: 1px solid #45475a;
-    color: #a6adc8;
-    border-radius: 4px;
-    padding: 2px 8px;
-    font-size: 11px;
-    cursor: pointer;
-    font-family: inherit;
-  }
-  .header button:hover { background: #45475a; color: #cdd6f4; }"""
-
-_REPORT_HEIGHT_JS = """\
-    function reportHeight() {
-      parent.postMessage({ type: 'iframe:height', height: document.documentElement.scrollHeight }, '*');
-    }
-    window.addEventListener('load', reportHeight);
-    new ResizeObserver(reportHeight).observe(document.body);"""
-
-# ── file classification for attach ───────────────────────────────────
-
-_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico", ".avif"}
-_BINARY_EXTS = {
-    ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
-    ".pdf", ".whl", ".egg",
-    ".exe", ".dll", ".so", ".dylib", ".a",
-    ".pyc", ".pyo", ".class",
-    ".sqlite", ".db",
-    ".wasm",
-    ".o", ".obj",
-    ".ttf", ".otf", ".woff", ".woff2",
-}
-_IMAGE_MIME = {
-    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-    ".gif": "image/gif", ".svg": "image/svg+xml", ".webp": "image/webp",
-    ".bmp": "image/bmp", ".ico": "image/x-icon", ".avif": "image/avif",
-}
-
-
-
-def _sniff_media_mime(raw: bytes) -> str | None:
-    """Detect audio/video MIME type from file magic bytes (no dependencies).
-
-    Returns a MIME string like 'video/mp4' or 'audio/mpeg', or None if the
-    bytes do not match any known media signature.  Only the first 12 bytes
-    are inspected so this is safe to call on arbitrarily large buffers.
-    """
-    if len(raw) < 4:
-        return None
-
-    head = raw[:12]
-
-    # RIFF container: WAV or AVI (bytes 0-3 = "RIFF", 8-11 = format)
-    if head[:4] == b"RIFF" and len(head) >= 12:
-        fmt = head[8:12]
-        if fmt == b"WAVE":
-            return "audio/wav"
-        if fmt == b"AVI ":
-            return "video/x-msvideo"
-
-    # Ogg container (Vorbis, Opus, Theora, etc.)
-    if head[:4] == b"OggS":
-        return "audio/ogg"
-
-    # FLAC
-    if head[:4] == b"fLaC":
-        return "audio/flac"
-
-    # MP3 — ID3v2 tag header
-    if head[:3] == b"ID3":
-        return "audio/mpeg"
-
-    # MP3 — raw MPEG sync word (frame header starts with 11 set bits)
-    if len(raw) >= 2 and (raw[0] == 0xFF) and (raw[1] & 0xE0) == 0xE0:
-        return "audio/mpeg"
-
-    # MPEG-4 / QuickTime family: bytes 4-8 = "ftyp"
-    if len(raw) >= 8 and head[4:8] == b"ftyp":
-        # Subtype at bytes 8-12 distinguishes mp4 vs m4a vs mov etc.
-        # but the browser handles all of them with <video>/<audio> via
-        # the generic MIME; we refine where we can.
-        if len(raw) >= 12:
-            brand = raw[8:12]
-            # M4A is audio-only MP4
-            if brand == b"M4A ":
-                return "audio/mp4"
-            # Common QuickTime brands
-            if brand in (b"qt  ", b"mqt "):
-                return "video/quicktime"
-        return "video/mp4"
-
-    # Matroska / WebM: EBML header 0x1A45DFA3
-    if head[:4] == b"\x1a\x45\xdf\xa3":
-        # WebM is a Matroska subset.  To distinguish them we would need
-        # to parse the EBML DocType element.  Sniff for the string "webm"
-        # in the first 64 bytes as a cheap heuristic.
-        probe = raw[:64] if len(raw) >= 64 else raw
-        if b"webm" in probe:
-            return "video/webm"
-        return "video/x-matroska"
-
-    return None
-
-
-def _media_mime(path: str, raw: bytes) -> str | None:
-    """Return an audio/* or video/* MIME type, or None if not a media file.
-
-    Tries magic-byte sniffing first (content-authoritative), then falls
-    back to stdlib mimetypes for extension-based guessing.
-    """
-    import mimetypes
-
-    # 1. Content sniff
-    mime = _sniff_media_mime(raw)
-    if mime:
-        return mime
-
-    # 2. Extension fallback via stdlib
-    guessed, _ = mimetypes.guess_type(path, strict=False)
-    if guessed and (guessed.startswith("audio/") or guessed.startswith("video/")):
-        return guessed
-
-    return None
-
-
-def _classify_file(path: str, raw: bytes) -> str:
-    """Classify a file as 'image', 'media', 'binary', or 'text'.
-
-    Uses extension sets for images and known-binary formats, magic-byte
-    sniffing for audio/video, and a UTF-8 decode heuristic as the final
-    fallback.
-    """
-    ext = ("." + path.rsplit(".", 1)[-1]).lower() if "." in path.rsplit("/", 1)[-1] else ""
-    if ext in _IMAGE_EXTS:
-        return "image"
-    if ext in _BINARY_EXTS:
-        return "binary"
-    # Media detection: magic bytes first, extension fallback
-    if _media_mime(path, raw) is not None:
-        return "media"
-    # Heuristic: try UTF-8 decode; if it fails, it's binary
-    try:
-        raw.decode("utf-8")
-        return "text"
-    except (UnicodeDecodeError, ValueError):
-        return "binary"
-
-
-def _render_image_html(raw: bytes, filename: str, path: str) -> str:
-    """Render an image file as an inline <img> with Save button."""
-    ext = ("." + path.rsplit(".", 1)[-1]).lower() if "." in path.rsplit("/", 1)[-1] else ""
-    mime = _IMAGE_MIME.get(ext, "application/octet-stream")
-    n_bytes = len(raw)
-    raw_b64 = base64.b64encode(raw).decode("ascii")
-
-    # SVGs can also be rendered directly, but data URI works fine
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-{_BASE_CSS}
-  .img-wrap {{
-    padding: 16px;
-    display: flex;
-    justify-content: center;
-    background: #181825;
-  }}
-  .img-wrap img {{
-    max-width: 100%;
-    height: auto;
-    border-radius: 4px;
-  }}
-</style>
-</head>
-<body>
-  <div class="header">
-    <span class="filename">{html_mod.escape(filename)}</span>
-    <span class="meta">{n_bytes:,} bytes</span>
-    <span class="actions">
-      <button onclick="saveFile()">Save</button>
-    </span>
-  </div>
-  <div class="img-wrap">
-    <img src="data:{mime};base64,{raw_b64}" alt="{html_mod.escape(filename)}">
-  </div>
-  <script>
-    var _b64 = "{raw_b64}";
-    var _mime = "{mime}";
-    var _fname = "{html_mod.escape(filename)}";
-    function saveFile() {{
-      var bin = atob(_b64);
-      var arr = new Uint8Array(bin.length);
-      for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-      var blob = new Blob([arr], {{type: _mime}});
-      var a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = _fname;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    }}
-{_REPORT_HEIGHT_JS}
-  </script>
-</body>
-</html>"""
-
-
-def _render_media_html(raw: bytes, filename: str, path: str) -> str:
-    """Render an audio/video file with inline <audio>/<video> controls and Save button."""
-    n_bytes = len(raw)
-    mime = _media_mime(path, raw) or "application/octet-stream"
-    is_video = mime.startswith("video/")
-    tag = "video" if is_video else "audio"
-    raw_b64 = base64.b64encode(raw).decode("ascii")
-
-    if is_video:
-        media_css = """
-  .media-wrap video {
-    max-width: 100%;
-    max-height: 480px;
-    border-radius: 4px;
-  }"""
-    else:
-        media_css = """
-  .media-wrap audio {
-    width: 100%;
-  }"""
-
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-{_BASE_CSS}
-  .media-wrap {{
-    padding: 16px;
-    display: flex;
-    justify-content: center;
-    background: #181825;
-  }}{media_css}
-</style>
-</head>
-<body>
-  <div class="header">
-    <span class="filename">{html_mod.escape(filename)}</span>
-    <span class="meta">{_human_size(n_bytes)}</span>
-    <span class="actions">
-      <button onclick="saveFile()">Save</button>
-    </span>
-  </div>
-  <div class="media-wrap">
-    <{tag} controls preload="metadata" src="data:{mime};base64,{raw_b64}">
-      Your browser does not support the {tag} element.
-    </{tag}>
-  </div>
-  <script>
-    var _b64 = "{raw_b64}";
-    var _mime = "{mime}";
-    var _fname = "{html_mod.escape(filename)}";
-    function saveFile() {{
-      var bin = atob(_b64);
-      var arr = new Uint8Array(bin.length);
-      for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-      var blob = new Blob([arr], {{type: _mime}});
-      var a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = _fname;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    }}
-{_REPORT_HEIGHT_JS}
-  </script>
-</body>
-</html>"""
-
-
-def _render_binary_html(raw: bytes, filename: str, path: str) -> str:
-    """Render a binary file as a download card with an embedded Save button."""
-    ext = ("." + path.rsplit(".", 1)[-1]).lower() if "." in path.rsplit("/", 1)[-1] else ""
-    n_bytes = len(raw)
-    raw_b64 = base64.b64encode(raw).decode("ascii")
-    save_button = '<button onclick="saveFile()">Save</button>'
-    save_script = f"""
-    var _b64 = "{raw_b64}";
-    var _fname = "{html_mod.escape(filename)}";
-    function saveFile() {{
-      var bin = atob(_b64);
-      var arr = new Uint8Array(bin.length);
-      for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-      var blob = new Blob([arr], {{type: 'application/octet-stream'}});
-      var a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = _fname;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    }}"""
-
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{
-    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
-    font-size: 13px;
-    background: #1e1e2e;
-    color: #cdd6f4;
-  }}
-  .card {{
-    background: #313244;
-    margin: 16px;
-    border-radius: 8px;
-    border: 1px solid #45475a;
-    overflow: hidden;
-  }}
-  .card-body {{
-    padding: 20px 16px;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-  }}
-  .icon {{
-    font-size: 32px;
-    flex-shrink: 0;
-    width: 48px;
-    height: 48px;
-    background: #45475a;
-    border-radius: 8px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }}
-  .info {{ flex: 1; }}
-  .info .filename {{ color: #89b4fa; font-weight: 600; font-size: 14px; }}
-  .info .meta {{ color: #585b70; font-size: 12px; margin-top: 4px; }}
-  .actions {{ display: flex; gap: 8px; align-items: center; }}
-  .actions button {{
-    background: #89b4fa;
-    border: none;
-    color: #1e1e2e;
-    border-radius: 6px;
-    padding: 6px 16px;
-    font-size: 12px;
-    cursor: pointer;
-    font-family: inherit;
-    font-weight: 600;
-  }}
-  .actions button:hover {{ background: #b4d0fb; }}
-  .too-large {{ color: #585b70; font-size: 11px; font-style: italic; }}
-</style>
-</head>
-<body>
-  <div class="card">
-    <div class="card-body">
-      <div class="icon">&#128230;</div>
-      <div class="info">
-        <div class="filename">{html_mod.escape(filename)}</div>
-        <div class="meta">{_human_size(n_bytes)} &middot; {ext.lstrip('.').upper() or 'BIN'} file</div>
-      </div>
-      <div class="actions">
-        {save_button}
-      </div>
-    </div>
-  </div>
-  <script>
-    {save_script}
-{_REPORT_HEIGHT_JS}
-  </script>
-</body>
-</html>"""
-
-
-def _upload_to_owui_storage(raw: bytes, filename: str, user_id: str, content_type: str = "application/octet-stream") -> str:
-    """Upload raw bytes to OWUI's file storage layer in-process.
-
-    Returns the OWUI file ID.  The file is owned by *user_id* so the user's
-    own JWT can read it back via ``GET /api/v1/files/{id}/content``.
-    """
-    import uuid as _uuid
-
-    from open_webui.models.files import FileForm, Files as OWUIFiles
-    from open_webui.storage.provider import Storage
-
-    file_id = str(_uuid.uuid4())
-    storage_filename = f"{file_id}_{filename}"
-
-    contents, file_path = Storage.upload_file(
-        io.BytesIO(raw),
-        storage_filename,
-        {
-            "OpenWebUI-User-Id": user_id,
-            "OpenWebUI-File-Id": file_id,
-        },
-    )
-
-    OWUIFiles.insert_new_file(
-        user_id,
-        FileForm(
-            id=file_id,
-            filename=filename,
-            path=file_path,
-            data={},
-            meta={
-                "name": filename,
-                "content_type": content_type,
-                "size": len(raw),
-                "data": {"source": "lathe-attach"},
-            },
-        ),
-    )
-    return file_id
-
-
-def _render_offloaded_html(
-    file_id: str,
-    filename: str,
-    file_type: str,
-    mime: str,
-    n_bytes: int,
-) -> str:
-    """Render a thin viewer shell (~2 KB) that fetches file content on-demand.
-
-    The iframe shares the parent origin when OWUI's sandbox policy includes
-    ``allow-same-origin``, so it can read the JWT from ``localStorage``.
-    Without that flag the fetch will 401 and the viewer shows a fallback.
-    """
-    esc_fname = html_mod.escape(filename)
-    ext = ("." + filename.rsplit(".", 1)[-1]).lower() if "." in filename else ""
-    ext_label = ext.lstrip(".").upper() or "BIN"
-    size_str = _human_size(n_bytes)
-    api_url = f"/api/v1/files/{file_id}/content"
-
-    # Build type-specific rendering JS (runs after the fetch resolves).
-    # Images are always inlined by attach() and never reach this path.
-    if file_type == "media":
-        is_video = mime.startswith("video/")
-        tag = "video" if is_video else "audio"
-        extra_style = (
-            "el.style.maxWidth='100%';el.style.maxHeight='480px';el.style.borderRadius='4px';"
-            if is_video
-            else "el.style.width='100%';"
-        )
-        render_js = f"""
-      var el = document.createElement('{tag}');
-      el.controls = true;
-      el.preload = 'metadata';
-      {extra_style}
-      el.src = URL.createObjectURL(blob);
-      var wrap = document.getElementById('content');
-      wrap.style.padding = '16px';
-      wrap.style.display = 'flex';
-      wrap.style.justifyContent = 'center';
-      wrap.style.background = '#181825';
-      wrap.appendChild(el);"""
-    elif file_type == "text":
-        render_js = f"""
-      var text = await blob.text();
-      var pre = document.createElement('pre');
-      var code = document.createElement('code');
-      code.textContent = text;
-      code.style.display = 'block';
-      code.style.padding = '12px';
-      code.style.lineHeight = '1.45';
-      code.style.tabSize = '4';
-      code.style.whiteSpace = 'pre';
-      code.style.overflowX = 'auto';
-      pre.style.margin = '0';
-      pre.appendChild(code);
-      var wrap = document.getElementById('content');
-      wrap.appendChild(pre);
-      // Also enable Copy button
-      document.getElementById('copy-btn').style.display = 'inline-block';
-      window._textContent = text;"""
-    else:
-        # binary — just show the download card, no inline render
-        render_js = f"""
-      var wrap = document.getElementById('content');
-      var card = document.createElement('div');
-      card.style.padding = '20px 16px';
-      card.style.display = 'flex';
-      card.style.alignItems = 'center';
-      card.style.gap = '16px';
-      card.innerHTML = '<div style="font-size:32px;flex-shrink:0;width:48px;height:48px;background:#45475a;border-radius:8px;display:flex;align-items:center;justify-content:center;">&#128230;</div>'
-        + '<div style="flex:1;"><div style="color:#89b4fa;font-weight:600;font-size:14px;">{esc_fname}</div>'
-        + '<div style="color:#585b70;font-size:12px;margin-top:4px;">{size_str} &middot; {ext_label} file</div></div>';
-      wrap.appendChild(card);"""
-
-    copy_button = '<button id="copy-btn" style="display:none;" onclick="copyFile()">Copy</button>' if file_type == "text" else ""
-
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-{_BASE_CSS}
-  #status {{
-    padding: 16px;
-    color: #a6adc8;
-    font-size: 12px;
-  }}
-  #status.error {{
-    color: #f38ba8;
-  }}
-</style>
-</head>
-<body>
-  <div class="header">
-    <span class="filename">{esc_fname}</span>
-    <span class="meta">{size_str}</span>
-    <span class="actions">
-      {copy_button}
-      <button id="save-btn" onclick="saveFile()" disabled>Save</button>
-    </span>
-  </div>
-  <div id="content"></div>
-  <div id="status">Loading\u2026</div>
-  <script>
-    var _blob = null;
-    var _fname = "{esc_fname}";
-
-    (async function() {{
-      var status = document.getElementById('status');
-      var token;
-      try {{
-        token = localStorage.getItem('token');
-      }} catch(e) {{
-        // allow-same-origin not set — localStorage is inaccessible
-        status.className = 'error';
-        status.textContent = 'Cannot load file: iframe sandbox is missing allow-same-origin. '
-          + 'Enable it in Settings \\u2192 Interface \\u2192 \"Allow iframes to access parent context\", then reload.';
-        reportHeight();
-        return;
-      }}
-      if (!token) {{
-        status.className = 'error';
-        status.textContent = 'No auth token found in localStorage.';
-        reportHeight();
-        return;
-      }}
-
-      try {{
-        var resp = await fetch("{api_url}", {{
-          headers: {{ "Authorization": "Bearer " + token }}
-        }});
-        if (!resp.ok) {{
-          throw new Error('HTTP ' + resp.status + ': ' + (await resp.text()));
-        }}
-        var blob = await resp.blob();
-        _blob = blob;
-
-        {render_js}
-
-        document.getElementById('save-btn').disabled = false;
-        status.style.display = 'none';
-      }} catch(e) {{
-        status.className = 'error';
-        status.textContent = 'Failed to load file: ' + e.message;
-      }}
-      reportHeight();
-    }})();
-
-    function saveFile() {{
-      if (!_blob) return;
-      var a = document.createElement('a');
-      a.href = URL.createObjectURL(_blob);
-      a.download = _fname;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    }}
-
-    function copyFile() {{
-      if (!window._textContent) return;
-      var btn = document.getElementById('copy-btn');
-      var ta = document.createElement('textarea');
-      ta.value = window._textContent;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      var ok = false;
-      try {{ ok = document.execCommand('copy'); }} catch(e) {{}}
-      document.body.removeChild(ta);
-      if (ok) {{
-        btn.textContent = 'Copied!';
-        setTimeout(function() {{ btn.textContent = 'Copy'; }}, 1500);
-      }} else {{
-        btn.textContent = 'Failed';
-        setTimeout(function() {{ btn.textContent = 'Copy'; }}, 1500);
-      }}
-    }}
-
-{_REPORT_HEIGHT_JS}
-  </script>
-</body>
-</html>"""
 
 
 VOLUME_MOUNT_PATH = "/home/daytona/volume"
@@ -1194,16 +550,12 @@ class Tools:
     # TODO(future): Valve-driven behavioral policy injection.
     #   Valves already control mechanism (timeouts, sandbox language,
     #   auto-stop). The next step is for Valve values to also inject
-    #   *policy guidance* into manpage content — e.g. a valve like
-    #   `attach_threshold_lines: int = 500` would cause the overview
-    #   to advise "prefer attach() over read() for files over 500
-    #   lines." Mechanism is fixed at class scan time; policy is
-    #   runtime-configurable through the manual.
+    #   *policy guidance* into manpage content. Mechanism is fixed at
+    #   class scan time; policy is runtime-configurable through the manual.
     #
     # TODO(future): Information architecture expansion.
-    #   v1 ships only "overview". As the toolkit grows, add per-tool
-    #   deep dives (manpage="bash"), workflow recipes
-    #   (manpage="attach-flow"), and troubleshooting guides. Existing
+    #   Add per-tool deep dives (manpage="bash"), workflow recipes
+    #   (manpage="expose-recipes"), and troubleshooting guides. Existing
     #   tool docstrings can then be further scrunched by adding
     #   breadcrumbs like 'see lathe(manpage="bash") for details'.
 
@@ -1404,23 +756,25 @@ class Tools:
 
             ## Key workflows
 
-            **Reading vs. attaching files:**
-            Use read() when *you* (the model) need to see file contents — the
-            text enters your context. Use attach() when the *user* needs to see
-            a file — it renders visually in chat but does NOT enter your context,
-            saving tokens. For large files, prefer attach and only read the
-            specific sections you need.
+            **Running services and exposing them:**
+            The sandbox is a server. Background a web server with nohup, then
+            call expose(port=N) to get a public HTTPS URL the user can open.
+            The sandbox auto-stops on idle, which kills background processes —
+            restart the server and call expose() again if needed.
 
-            **Getting files in and out of the sandbox:**
-            Use ingest() to pull files from the user's local machine into the
-            sandbox without burning context (the content goes straight to disk).
-            Use attach() to show sandbox files to the user visually. Neither
-            path passes file content through the conversation.
+            **File browser (replacing upload/download):**
+            Instead of dedicated file transfer tools, run a file server in the
+            sandbox (e.g. dufs) and expose it. The user gets drag-and-drop
+            upload/download with no size limit and no OWUI involvement:
+            ```
+            nohup /tmp/dufs /home/daytona --port 3000 --allow-all &
+            ```
+            Then expose(port=3000).
 
-            **Running services:**
-            Background long-running servers with nohup, then call preview() to
-            get a signed URL the user can open. The sandbox auto-stops on idle,
-            which kills background processes — restart and re-preview if needed.
+            **Interactive shell:**
+            For interactive work, call expose(ssh=true) to give the user a
+            time-limited SSH command they can paste into their terminal, VS Code
+            Remote SSH, or JetBrains Gateway.
 
             **Project context:**
             Call onboard() at the start of a conversation to load AGENTS.md and
@@ -1429,8 +783,8 @@ class Tools:
             ## Gotchas
 
             - Commands are non-interactive. No stdin prompts, no curses UIs. Use
-              -y or equivalent flags. For interactive work, give the user an ssh()
-              token.
+              -y or equivalent flags. For interactive work, give the user an
+              expose(ssh=true) token.
             - bash() auto-backgrounds commands that exceed ~30 seconds. When this
               happens, it returns a background descriptor with CMD and PID paths.
               Use foreground_seconds= to extend the wait (e.g. foreground_seconds=120
@@ -1443,12 +797,9 @@ class Tools:
             - edit() requires an exact string match (including whitespace). If
               the match is ambiguous, provide more surrounding context or use
               replace_all=true.
-            - attach() returns an HTMLResponse rendered for the user. The model
-              receives NO file content back. If you need to verify what was
-              written, use read().
-            - preview() URLs expire after ~1 hour. The sandbox itself stops on
+            - expose() URLs expire after ~1 hour. The sandbox itself stops on
               idle (~15 min default), killing servers.
-            - destroy() is irreversible. The volume can optionally be preserved.
+            - destroy() is irreversible. The volume is preserved.
             - **Network egress is restricted.** The sandbox can only reach a
               curated allowlist of hosts: package registries (PyPI, npm, apt),
               git hosts (GitHub, GitLab, Bitbucket), container registries
@@ -1464,8 +815,10 @@ class Tools:
               like `pip install` or `git clone` to non-allowlisted hosts still
               fail — use fetch() to download the artifact, then install from
               the local file. See lathe(manpage="fetch") for patterns.
-              If fetch() isn't sufficient, the user can use ingest() to bring
-              data in from their local machine instead.
+            - **WebSockets do not work through the Daytona proxy.** The proxy
+              strips the Upgrade header, so Streamlit, Marimo edit mode, socket.io,
+              and similar tools will fail. Use SSE over plain HTTP for agent-to-browser
+              push. FastAPI + SSE is the recommended pattern.
             """),
     }
 
@@ -1484,7 +837,7 @@ class Tools:
         __event_emitter__=None,
     ) -> str:
         """
-        Manual for the lathe toolkit: bash, read, write, edit, attach, ingest, onboard, preview, ssh, fetch, destroy. Default manpage: overview.
+        Manual for the lathe toolkit: bash, read, write, edit, onboard, expose, fetch, destroy. Default manpage: overview.
         :param manpage: Which manual page to return. Use "overview" for big-picture orientation.
         """
         tool_catalog = _build_tool_catalog(self)
@@ -2107,607 +1460,59 @@ class Tools:
 
         return await _tool_context(__event_emitter__, _run)
 
-    async def attach(
+    async def expose(
         self,
-        path: str,
-        __user__: dict = {},
-        __event_emitter__=None,
-    ) -> HTMLResponse:
-        """
-        Show a sandbox file to the user inline. Content is NOT returned to the model.
-        Use read() if you need to see the contents yourself.
-        :param path: Absolute path or relative to /home/daytona (e.g. workspace/main.py).
-        """
-        async def _run(client):
-            email = _get_email(__user__)
-            user_id = __user__.get("id", "")
-            sandbox_id, _sb_warning = await _ensure_sandbox(self.valves, email, client, __event_emitter__)
-
-            await _emit(__event_emitter__, f"Attaching {path}...")
-
-            resp = await client.get(
-                _toolbox(self.valves, sandbox_id, "/files/download"),
-                params={"path": path},
-                headers=_headers(self.valves),
-                timeout=60.0,
-            )
-
-            if resp.status_code == 404:
-                await _emit(__event_emitter__, "File not found", done=True)
-                return f"Error: File not found: {path}"
-
-            resp.raise_for_status()
-            raw = resp.content  # bytes, not text — safe for binary
-
-            n_bytes = len(raw)
-            filename = path.rsplit("/", 1)[-1] if "/" in path else path
-            file_type = _classify_file(path, raw)
-
-            # ── offloaded path: media & binary go to OWUI storage ────
-            #   Text and images are always inlined (fast, self-contained).
-            #   Media and binary are always offloaded so the chat DB stays
-            #   small regardless of file size.
-            if file_type in ("media", "binary") and user_id:
-                ext = ("." + path.rsplit(".", 1)[-1]).lower() if "." in path.rsplit("/", 1)[-1] else ""
-                ct = (_media_mime(path, raw) or "application/octet-stream") if file_type == "media" else "application/octet-stream"
-
-                try:
-                    await _emit(__event_emitter__, f"Uploading {filename} to file storage...")
-                    file_id = await asyncio.to_thread(_upload_to_owui_storage, raw, filename, user_id, ct)
-                    html_content = _render_offloaded_html(
-                        file_id, filename, file_type, ct, n_bytes,
-                    )
-                    await _emit(
-                        __event_emitter__,
-                        f"Attached {filename} ({_human_size(n_bytes)}, offloaded to file storage)",
-                        done=True,
-                    )
-                    return HTMLResponse(content=html_content, headers={"Content-Disposition": "inline"})
-                except Exception as e:
-                    raise RuntimeError(f"OWUI storage offload failed for {filename}: {e}") from e
-
-            # ── inline path: text and images ─────────────────────────
-            if file_type == "image":
-                html_content = _render_image_html(raw, filename, path)
-            elif file_type == "media":
-                html_content = _render_media_html(raw, filename, path)
-            elif file_type == "binary":
-                html_content = _render_binary_html(raw, filename, path)
-            else:
-                # Text path: decode, highlight, render code viewer
-                content = raw.decode("utf-8")
-                n_lines = content.count("\n") + (0 if content.endswith("\n") else 1)
-                highlighted = _highlight_code(content, path)
-                raw_b64 = base64.b64encode(raw).decode("ascii")
-
-                html_content = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-{_BASE_CSS}
-  .header button.ok {{ color: #a6e3a1; border-color: #a6e3a1; }}
-  .code-wrap {{
-    display: flex;
-    overflow-x: auto;
-  }}
-  .gutter {{
-    padding: 12px 0;
-    text-align: right;
-    color: #585b70;
-    user-select: none;
-    flex-shrink: 0;
-    border-right: 1px solid #313244;
-  }}
-  .gutter div {{
-    padding: 0 12px;
-    line-height: 1.45;
-  }}
-  pre {{
-    margin: 0;
-    flex: 1;
-    overflow-x: auto;
-  }}
-  pre code {{
-    display: block;
-    padding: 12px;
-    line-height: 1.45;
-    tab-size: 4;
-  }}
-</style>
-</head>
-<body>
-  <div class="header">
-    <span class="filename">{html_mod.escape(filename)}</span>
-    <span class="meta">{n_lines} lines &middot; {n_bytes:,} bytes</span>
-    <span class="actions">
-      <button id="copy-btn" onclick="copyFile()">Copy</button>
-      <button onclick="saveFile()">Save</button>
-    </span>
-  </div>
-  <div class="code-wrap">
-    <div class="gutter">{"".join(f"<div>{i}</div>" for i in range(1, n_lines + 1))}</div>
-    <pre><code>{highlighted}</code></pre>
-  </div>
-  <script>
-    var _raw = atob("{raw_b64}");
-    var _fname = "{html_mod.escape(filename)}";
-    function copyFile() {{
-      var btn = document.getElementById('copy-btn');
-      var ta = document.createElement('textarea');
-      ta.value = _raw;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      var ok = false;
-      try {{ ok = document.execCommand('copy'); }} catch(e) {{}}
-      document.body.removeChild(ta);
-      if (ok) {{
-        btn.textContent = 'Copied!';
-        btn.classList.add('ok');
-        setTimeout(function() {{ btn.textContent = 'Copy'; btn.classList.remove('ok'); }}, 1500);
-      }} else {{
-        btn.textContent = 'Failed';
-        setTimeout(function() {{ btn.textContent = 'Copy'; }}, 1500);
-      }}
-    }}
-    function saveFile() {{
-      var blob = new Blob([_raw], {{type: 'text/plain'}});
-      var a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = _fname;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    }}
-{_REPORT_HEIGHT_JS}
-  </script>
-</body>
-</html>"""
-
-            await _emit(__event_emitter__, f"Attached {filename} ({n_bytes:,} bytes)", done=True)
-            return HTMLResponse(content=html_content, headers={"Content-Disposition": "inline"})
-
-        return await _tool_context(__event_emitter__, _run)
-
-    async def ingest(
-        self,
-        prompt: str = "",
-        __user__: dict = {},
-        __event_emitter__=None,
-        __event_call__=None,
-    ) -> str:
-        """
-        Pull a file or text from the user's machine into the sandbox. Content goes
-        straight to disk without entering the conversation context. Use read() afterward
-        to inspect.
-        :param prompt: Message shown to the user (e.g. "Upload your CSV dataset").
-        """
-        async def _run(client):
-            email = _get_email(__user__)
-            sandbox_id, _sb_warning = await _ensure_sandbox(self.valves, email, client, __event_emitter__)
-
-            if not __event_call__:
-                return "Error: ingest requires browser-side execution (__event_call__). Ensure the toolkit is used in Native function calling mode."
-
-            # Build the prompt text for the modal
-            prompt_text = prompt if prompt else "The assistant is asking for a file or text."
-            prompt_js = json.dumps(prompt_text)
-
-            # Max file size (25 MB)
-            max_bytes = 25 * 1024 * 1024
-
-            # The JS presents two stacked sections: a file picker/drop zone
-            # on top and a paste-text area below.  Whichever the user fills
-            # in gets uploaded to OWUI's Files API from the browser (normal
-            # HTTP POST with XHR for progress).  Only the small file ID +
-            # metadata flows back through __event_call__.
-            js = f"""
-const promptText = {prompt_js};
-const maxBytes = {max_bytes};
-
-return await new Promise((resolve) => {{
-    const container = document.createElement("div");
-    container.style.cssText =
-        "position:fixed;top:0;left:0;width:100%;height:100%;" +
-        "display:flex;align-items:center;justify-content:center;" +
-        "background:rgba(0,0,0,0.45);z-index:99999";
-
-    const card = document.createElement("div");
-    card.style.cssText =
-        "background:#1e1e2e;border-radius:12px;padding:32px 40px;" +
-        "text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.5);" +
-        "font-family:system-ui,sans-serif;color:#cdd6f4;max-width:520px;width:90vw";
-
-    const title = document.createElement("h3");
-    title.textContent = "Upload to Sandbox";
-    title.style.cssText = "margin:0 0 8px;font-size:18px;color:#f5e0dc";
-
-    const desc = document.createElement("p");
-    desc.textContent = promptText;
-    desc.style.cssText = "margin:0 0 20px;font-size:14px;opacity:0.8";
-
-    const fileInfo = document.createElement("p");
-    fileInfo.style.cssText = "margin:0 0 16px;font-size:13px;color:#89b4fa;min-height:20px";
-
-    // Progress bar (hidden until upload starts)
-    const progressWrap = document.createElement("div");
-    progressWrap.style.cssText =
-        "display:none;margin:0 0 16px;background:#45475a;border-radius:4px;" +
-        "height:6px;overflow:hidden";
-    const progressBar = document.createElement("div");
-    progressBar.style.cssText =
-        "height:100%;width:0%;background:#89b4fa;border-radius:4px;" +
-        "transition:width 0.2s ease";
-    progressWrap.appendChild(progressBar);
-
-    const input = document.createElement("input");
-    input.type = "file";
-    input.style.display = "none";
-
-    // ── shared state ──
-    let selectedFile = null;   // File object (from picker or drop)
-    let mode = null;           // "file" | "text"
-
-    function humanSize(n) {{
-        if (n < 1024) return n + " B";
-        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
-        return (n / 1024 / 1024).toFixed(1) + " MB";
-    }}
-
-    function updateUploadBtn() {{
-        if (mode === "file" && selectedFile && selectedFile.size <= maxBytes) {{
-            uploadBtn.style.display = "inline-block";
-        }} else if (mode === "text" && pasteArea.value.trim().length > 0) {{
-            uploadBtn.style.display = "inline-block";
-        }} else {{
-            uploadBtn.style.display = "none";
-        }}
-    }}
-
-    function selectFile(file) {{
-        selectedFile = file;
-        mode = "file";
-        // clear text section when a file is chosen
-        pasteArea.value = "";
-        pasteArea.style.borderColor = "#45475a";
-        if (selectedFile.size > maxBytes) {{
-            fileInfo.textContent = selectedFile.name + " (" + humanSize(selectedFile.size) + ") \\u2014 too large (max 25 MB)";
-            fileInfo.style.color = "#f38ba8";
-        }} else {{
-            fileInfo.textContent = selectedFile.name + " (" + humanSize(selectedFile.size) + ")";
-            fileInfo.style.color = "#a6e3a1";
-        }}
-        updateUploadBtn();
-    }}
-
-    input.onchange = () => {{
-        if (input.files && input.files.length > 0) selectFile(input.files[0]);
-    }};
-
-    // ── file section: choose button + drop zone ──
-    const chooseBtn = document.createElement("button");
-    chooseBtn.textContent = "Choose File\\u2026";
-    chooseBtn.style.cssText =
-        "padding:10px 28px;font-size:15px;border:none;border-radius:8px;" +
-        "background:#89b4fa;color:#1e1e2e;cursor:pointer;font-weight:600;" +
-        "white-space:nowrap";
-    chooseBtn.onclick = () => input.click();
-
-    const dropHint = document.createElement("p");
-    dropHint.textContent = "or drop a file onto this dialog";
-    dropHint.style.cssText = "margin:8px 0 0;font-size:12px;color:#585b70;font-style:italic";
-
-    // Drag-and-drop: make the whole card a drop target
-    let dragCounter = 0;
-    const defaultBorder = "none";
-    const activeBorder = "2px dashed #89b4fa";
-    card.style.border = defaultBorder;
-    card.addEventListener("dragenter", (e) => {{
-        e.preventDefault();
-        dragCounter++;
-        card.style.border = activeBorder;
-    }});
-    card.addEventListener("dragleave", (e) => {{
-        e.preventDefault();
-        dragCounter--;
-        if (dragCounter <= 0) {{ dragCounter = 0; card.style.border = defaultBorder; }}
-    }});
-    card.addEventListener("dragover", (e) => {{
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-    }});
-    card.addEventListener("drop", (e) => {{
-        e.preventDefault();
-        dragCounter = 0;
-        card.style.border = defaultBorder;
-        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {{
-            selectFile(e.dataTransfer.files[0]);
-        }}
-    }});
-
-    // ── divider ──
-    const divider = document.createElement("div");
-    divider.style.cssText =
-        "display:flex;align-items:center;gap:12px;margin:20px 0";
-    const line1 = document.createElement("div");
-    line1.style.cssText = "flex:1;height:1px;background:#45475a";
-    const orText = document.createElement("span");
-    orText.textContent = "or paste text";
-    orText.style.cssText = "font-size:12px;color:#585b70;white-space:nowrap";
-    const line2 = document.createElement("div");
-    line2.style.cssText = "flex:1;height:1px;background:#45475a";
-    divider.appendChild(line1);
-    divider.appendChild(orText);
-    divider.appendChild(line2);
-
-    // ── text section: textarea + filename field ──
-    const pasteArea = document.createElement("textarea");
-    pasteArea.placeholder = "Paste or type content here\\u2026";
-    pasteArea.style.cssText =
-        "width:100%;min-height:100px;max-height:240px;padding:10px 12px;font-size:13px;" +
-        "font-family:'SF Mono',ui-monospace,monospace;background:#181825;color:#cdd6f4;" +
-        "border:1px solid #45475a;border-radius:8px;resize:vertical;" +
-        "box-sizing:border-box;outline:none";
-    pasteArea.addEventListener("focus", () => {{
-        pasteArea.style.borderColor = "#89b4fa";
-    }});
-    pasteArea.addEventListener("blur", () => {{
-        pasteArea.style.borderColor = "#45475a";
-    }});
-    pasteArea.addEventListener("input", () => {{
-        if (pasteArea.value.trim().length > 0) {{
-            mode = "text";
-            // clear file selection when text is typed
-            selectedFile = null;
-            fileInfo.textContent = "";
-        }} else if (mode === "text") {{
-            mode = null;
-        }}
-        updateUploadBtn();
-    }});
-
-    // Filename row
-    const fnRow = document.createElement("div");
-    fnRow.style.cssText =
-        "display:flex;align-items:center;gap:8px;margin-top:8px";
-    const fnLabel = document.createElement("span");
-    fnLabel.textContent = "Save as:";
-    fnLabel.style.cssText = "font-size:12px;color:#a6adc8;white-space:nowrap";
-    const fnInput = document.createElement("input");
-    fnInput.type = "text";
-    fnInput.value = "pasted.txt";
-    fnInput.style.cssText =
-        "flex:1;padding:6px 10px;font-size:13px;" +
-        "font-family:'SF Mono',ui-monospace,monospace;background:#181825;color:#cdd6f4;" +
-        "border:1px solid #45475a;border-radius:6px;outline:none;box-sizing:border-box";
-    fnInput.addEventListener("focus", () => {{ fnInput.style.borderColor = "#89b4fa"; }});
-    fnInput.addEventListener("blur", () => {{ fnInput.style.borderColor = "#45475a"; }});
-    fnRow.appendChild(fnLabel);
-    fnRow.appendChild(fnInput);
-
-    // ── action buttons ──
-    const uploadBtn = document.createElement("button");
-    uploadBtn.textContent = "Upload";
-    uploadBtn.style.cssText =
-        "padding:10px 28px;font-size:15px;border:none;border-radius:8px;" +
-        "background:#a6e3a1;color:#1e1e2e;cursor:pointer;font-weight:600;" +
-        "white-space:nowrap;display:none";
-
-    const cancel = document.createElement("button");
-    cancel.textContent = "Cancel";
-    cancel.style.cssText =
-        "padding:10px 28px;font-size:14px;border:1px solid #585b70;" +
-        "border-radius:8px;background:transparent;color:#a6adc8;" +
-        "cursor:pointer;white-space:nowrap";
-
-    // ── upload handler (shared for both modes) ──
-    function doUpload(blob, name, size) {{
-        uploadBtn.style.display = "none";
-        chooseBtn.style.display = "none";
-        cancel.style.display = "none";
-        dropHint.style.display = "none";
-        divider.style.display = "none";
-        pasteArea.style.display = "none";
-        fnRow.style.display = "none";
-        progressWrap.style.display = "block";
-        fileInfo.textContent = "Uploading\\u2026 0%";
-        fileInfo.style.color = "#89b4fa";
-
-        const token = localStorage.getItem("token");
-        const formData = new FormData();
-        formData.append("file", blob, name);
-
-        const xhr = new XMLHttpRequest();
-
-        xhr.upload.onprogress = (e) => {{
-            if (e.lengthComputable) {{
-                const pct = Math.round(e.loaded / e.total * 100);
-                progressBar.style.width = pct + "%";
-                fileInfo.textContent = "Uploading\\u2026 " + pct + "% (" + humanSize(e.loaded) + " / " + humanSize(e.total) + ")";
-            }}
-        }};
-
-        xhr.upload.onload = () => {{
-            progressBar.style.width = "100%";
-            progressBar.style.background = "#a6e3a1";
-            fileInfo.textContent = "Processing\\u2026";
-            fileInfo.style.color = "#a6e3a1";
-        }};
-
-        xhr.onload = () => {{
-            if (xhr.status >= 200 && xhr.status < 300) {{
-                try {{
-                    const result = JSON.parse(xhr.responseText);
-                    container.remove();
-                    resolve(JSON.stringify({{
-                        ok: true,
-                        name: name,
-                        size: size,
-                        file_id: result.id,
-                    }}));
-                }} catch (e) {{
-                    container.remove();
-                    resolve(JSON.stringify({{ ok: false, error: "Bad response: " + xhr.responseText.slice(0, 200) }}));
-                }}
-            }} else {{
-                container.remove();
-                resolve(JSON.stringify({{ ok: false, error: "Upload failed: HTTP " + xhr.status + " " + xhr.responseText.slice(0, 200) }}));
-            }}
-        }};
-
-        xhr.onerror = () => {{
-            container.remove();
-            resolve(JSON.stringify({{ ok: false, error: "Network error during upload" }}));
-        }};
-
-        xhr.open("POST", "/api/v1/files/");
-        xhr.setRequestHeader("Authorization", "Bearer " + token);
-        xhr.send(formData);
-    }}
-
-    uploadBtn.onclick = () => {{
-        if (mode === "file" && selectedFile) {{
-            doUpload(selectedFile, selectedFile.name, selectedFile.size);
-        }} else if (mode === "text") {{
-            const text = pasteArea.value;
-            const name = fnInput.value.trim() || "pasted.txt";
-            const blob = new Blob([text], {{ type: "text/plain" }});
-            doUpload(blob, name, blob.size);
-        }}
-    }};
-
-    cancel.onclick = () => {{
-        container.remove();
-        resolve(JSON.stringify({{ ok: false, error: "User cancelled" }}));
-    }};
-
-    // ── assemble layout ──
-    const btnRow = document.createElement("div");
-    btnRow.style.cssText = "display:flex;align-items:center;justify-content:center;gap:12px;margin-top:20px";
-    btnRow.appendChild(uploadBtn);
-    btnRow.appendChild(cancel);
-
-    card.appendChild(title);
-    card.appendChild(desc);
-    card.appendChild(fileInfo);
-    card.appendChild(progressWrap);
-    card.appendChild(input);
-    card.appendChild(chooseBtn);
-    card.appendChild(dropHint);
-    card.appendChild(divider);
-    card.appendChild(pasteArea);
-    card.appendChild(fnRow);
-    card.appendChild(btnRow);
-    container.appendChild(card);
-    document.body.appendChild(container);
-}});
-"""
-
-            await _emit(__event_emitter__, "Waiting for user input...")
-
-            raw = await __event_call__({"type": "execute", "data": {"code": js}})
-
-            # Normalise response
-            if isinstance(raw, str):
-                try:
-                    result = json.loads(raw)
-                except json.JSONDecodeError:
-                    result = {"ok": False, "error": f"Unexpected response: {raw[:200]}"}
-            elif isinstance(raw, dict):
-                result = raw
-            else:
-                result = {"ok": False, "error": f"Unexpected response type: {type(raw)}"}
-
-            if not result.get("ok"):
-                err = result.get("error", "Unknown error")
-                await _emit(__event_emitter__, f"Not uploaded: {err}", done=True)
-                return f"Not uploaded: {err}"
-
-            filename = result.get("name", "unknown")
-            file_size = result.get("size", 0)
-            file_id = result.get("file_id", "")
-
-            if not file_id:
-                await _emit(__event_emitter__, "No file ID received", done=True)
-                return "Error: Browser upload succeeded but no file ID returned."
-
-            # Read file directly from OWUI's storage layer. The toolkit runs
-            # in-process, so we import the models and storage provider rather
-            # than making an HTTP call to ourselves.
-            await _emit(__event_emitter__, f"Transferring {filename} to sandbox...")
-
-            try:
-                from open_webui.models.files import Files as OWUIFiles
-                from open_webui.storage.provider import Storage
-
-                file_record = OWUIFiles.get_file_by_id(file_id)
-                if not file_record:
-                    await _emit(__event_emitter__, "File not found in OWUI", done=True)
-                    return f"Error: File {file_id} not found in OWUI database."
-
-                local_path = Storage.get_file(file_record.path)
-                file_bytes = await asyncio.to_thread(lambda: open(local_path, "rb").read())
-            except ImportError as e:
-                await _emit(__event_emitter__, "Internal error accessing OWUI storage", done=True)
-                return f"Error: Could not import OWUI storage layer: {e}"
-
-            dest_path = f"/home/daytona/workspace/{filename}"
-
-            # Ensure workspace directory exists
-            await client.post(
-                _toolbox(self.valves, sandbox_id, "/process/execute"),
-                headers=_headers(self.valves),
-                json={
-                    "command": 'bash -c "mkdir -p /home/daytona/workspace"',
-                    "timeout": 5000,
-                },
-                timeout=30.0,
-            )
-
-            # Upload to Daytona sandbox
-            resp = await client.post(
-                _toolbox(self.valves, sandbox_id, "/files/upload"),
-                params={"path": dest_path},
-                headers={
-                    "Authorization": f"Bearer {self.valves.daytona_api_key}",
-                },
-                files={"file": ("file", io.BytesIO(file_bytes), "application/octet-stream")},
-                timeout=120.0,
-            )
-            resp.raise_for_status()
-
-            # Delete the transient file from OWUI storage
-            try:
-                from open_webui.models.files import Files as OWUIFiles
-                OWUIFiles.delete_file_by_id(file_id)
-            except Exception:
-                pass  # cleanup failure is non-fatal
-
-            size_str = _human_size(file_size)
-            await _emit(__event_emitter__, f"Uploaded {filename} ({size_str})", done=True)
-            return _prepend_warning(f"Uploaded {filename} ({size_str}) to {dest_path}", _sb_warning)
-
-        return await _tool_context(__event_emitter__, _run)
-
-    async def preview(
-        self,
-        port: int = 3000,
+        port: int = 0,
+        ssh: bool = False,
         __user__: dict = {},
         __event_emitter__=None,
     ) -> str:
         """
-        Generate a signed preview URL for a service running in the sandbox.
-        :param port: Port the service listens on (3000–9999, default: 3000).
+        Expose a sandbox service to the user. Use port= for web servers,
+        ssh=true for interactive shell access.
+        Common patterns: run dufs for file upload/download, code-server for
+        a full IDE, or any web app. See lathe(manpage="overview") for recipes.
+        :param port: Port the service listens on (3000–9999). Returns a public HTTPS URL valid ~1 hour.
+        :param ssh: If true, returns a time-limited SSH command (ignores port).
         """
         async def _run(client):
-            if not isinstance(port, int) or port < 3000 or port > 9999:
-                return "Error: port must be an integer between 3000 and 9999."
+            if not ssh and (not isinstance(port, int) or port < 3000 or port > 9999):
+                return "Error: port must be an integer between 3000 and 9999, or set ssh=true for shell access."
 
             email = _get_email(__user__)
             sandbox_id, _sb_warning = await _ensure_sandbox(self.valves, email, client, __event_emitter__)
 
-            await _emit(__event_emitter__, f"Generating preview URL for port {port}...")
+            if ssh:
+                await _emit(__event_emitter__, "Creating SSH access token...")
+                resp = await client.post(
+                    _api(self.valves, f"/sandbox/{sandbox_id}/ssh-access"),
+                    params={"expiresInMinutes": 60},
+                    headers=_headers(self.valves),
+                    timeout=30.0,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                ssh_command = data.get("sshCommand", "")
+                if not ssh_command:
+                    token = data.get("token", "")
+                    if not token:
+                        return "Error: Daytona returned neither sshCommand nor token."
+                    ssh_command = f"ssh {token}@ssh.app.daytona.io"
+
+                await _emit(__event_emitter__, "SSH access ready", done=True)
+                return _prepend_warning(
+                    f"SSH command (valid 60 min):\n\n"
+                    f"```\n{ssh_command}\n```\n\n"
+                    f"The user can paste this into their terminal, VS Code Remote SSH, "
+                    f"or JetBrains Gateway.\n\n"
+                    f"Note: the sandbox auto-stops after ~{self.valves.auto_stop_minutes} min of inactivity. "
+                    f"Active SSH sessions keep the sandbox alive.",
+                    _sb_warning,
+                )
+
+            # Port exposure path
+            await _emit(__event_emitter__, f"Generating URL for port {port}...")
 
             resp = await client.get(
                 _api(self.valves, f"/sandbox/{sandbox_id}/ports/{port}/signed-preview-url"),
@@ -2720,65 +1525,16 @@ return await new Promise((resolve) => {{
 
             url = data.get("url", "")
             if not url:
-                return "Error: Daytona returned an empty preview URL."
+                return "Error: Daytona returned an empty URL."
 
-            await _emit(__event_emitter__, f"Preview URL ready (port {port})", done=True)
+            await _emit(__event_emitter__, f"URL ready (port {port})", done=True)
             return _prepend_warning(
-                f"Preview URL (valid ~1 hour): {url}\n\n"
+                f"Public URL (valid ~1 hour): {url}\n\n"
                 f"The user can open this in a new browser tab. "
                 f"They may see a Daytona security warning on first visit — they can click through it.\n\n"
-                f"Note: the sandbox auto-stops after ~15 min of inactivity regardless of "
+                f"Note: the sandbox auto-stops after ~{self.valves.auto_stop_minutes} min of inactivity regardless of "
                 f"running background processes, killing the server. If the user reports "
-                f"the preview stopped working, restart the server and call preview() again.",
-                _sb_warning,
-            )
-
-        return await _tool_context(__event_emitter__, _run)
-
-    async def ssh(
-        self,
-        expires_in_minutes: int = 60,
-        __user__: dict = {},
-        __event_emitter__=None,
-    ) -> str:
-        """
-        Generate a time-limited SSH command for the user to connect interactively.
-        :param expires_in_minutes: Token validity in minutes (1–1440, default: 60).
-        """
-        async def _run(client):
-            if not isinstance(expires_in_minutes, int) or expires_in_minutes < 1 or expires_in_minutes > 1440:
-                return "Error: expires_in_minutes must be an integer between 1 and 1440 (24 hours)."
-
-            email = _get_email(__user__)
-            sandbox_id, _sb_warning = await _ensure_sandbox(self.valves, email, client, __event_emitter__)
-
-            await _emit(__event_emitter__, "Creating SSH access token...")
-
-            resp = await client.post(
-                _api(self.valves, f"/sandbox/{sandbox_id}/ssh-access"),
-                params={"expiresInMinutes": expires_in_minutes},
-                headers=_headers(self.valves),
-                timeout=30.0,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-            ssh_command = data.get("sshCommand", "")
-            if not ssh_command:
-                # Fallback: construct from token if sshCommand not present
-                token = data.get("token", "")
-                if not token:
-                    return "Error: Daytona returned neither sshCommand nor token."
-                ssh_command = f"ssh {token}@ssh.app.daytona.io"
-
-            await _emit(__event_emitter__, "SSH access ready", done=True)
-            return _prepend_warning(
-                f"SSH command (valid {expires_in_minutes} min):\n\n"
-                f"```\n{ssh_command}\n```\n\n"
-                f"The user can paste this into their terminal, VS Code Remote SSH, "
-                f"or JetBrains Gateway.\n\n"
-                f"Note: the sandbox auto-stops after ~{self.valves.auto_stop_minutes} min of inactivity. "
-                f"Active SSH sessions keep the sandbox alive.",
+                f"the URL stopped working, restart the server and call expose() again.",
                 _sb_warning,
             )
 

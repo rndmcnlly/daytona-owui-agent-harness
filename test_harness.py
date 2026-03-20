@@ -15,25 +15,13 @@ that no amount of integration testing catches, because these tests call the
 Python methods directly with correct arguments. What's needed is an eval
 harness where an agent that has *not* read the source code is given only the
 tool schemas (names, docstrings, param descriptions) and asked to accomplish
-tasks (e.g. "start a web server and give me a preview link"). Score on: does
+tasks (e.g. "start a web server and get an expose URL"). Score on: does
 it background the server, does it pick the right port, does it avoid known
 pitfalls. This tests the docstrings as prompts, not the code as code.
-
-TODO (agentic manual testing against a real deployment): The following
-behaviors require OWUI internals (open_webui.models.files, Storage) and
-cannot be tested outside a live OWUI process. Verify these manually by
-deploying and exercising attach() in chat:
-  - attach() on a binary file (e.g. .zip) offloads to OWUI file storage and
-    returns an offloaded viewer shell that fetches via /api/v1/files/{id}/content
-  - attach() on a media file (e.g. .wav, .mp4) similarly offloads and renders
-    an inline <audio>/<video> player that streams from OWUI storage
-  - The offloaded viewer requires allow-same-origin in the iframe sandbox to
-    read localStorage for the JWT; verify the fallback error message appears
-    if that setting is disabled
 """
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["httpx", "pydantic", "python-dotenv", "fastapi", "pygments"]
+# dependencies = ["httpx", "pydantic", "python-dotenv"]
 # ///
 
 import asyncio
@@ -128,179 +116,6 @@ async def test_unit_parse_env_vars(R: Results):
     except ValueError as e:
         R.check("array raises ValueError", True)
         R.check("array error mentions object", "object" in str(e), str(e))
-
-
-async def test_unit_classify_file(R: Results):
-    from lathe import _classify_file
-
-    print("\n── _classify_file: image extensions ──")
-    for ext in ["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico", "avif"]:
-        R.check(f".{ext} classified as image", _classify_file(f"file.{ext}", b"") == "image", f"got {_classify_file(f'file.{ext}', b'')}")
-
-    print("\n── _classify_file: binary extensions ──")
-    for ext in ["zip", "tar", "gz", "pdf", "exe", "whl", "sqlite", "woff2"]:
-        R.check(f".{ext} classified as binary", _classify_file(f"file.{ext}", b"") == "binary", f"got {_classify_file(f'file.{ext}', b'')}")
-
-    print("\n── _classify_file: media by extension (no magic bytes) ──")
-    # Files with media extensions but empty content — extension fallback via mimetypes
-    for ext, expected in [("mp3", "media"), ("mp4", "media"), ("wav", "media"),
-                          ("ogg", "media"), ("flac", "media"), ("webm", "media"),
-                          ("mkv", "media"), ("mov", "media"), ("avi", "media"),
-                          ("m4a", "media"), ("aac", "media"), ("opus", "media")]:
-        R.check(f".{ext} classified as media", _classify_file(f"file.{ext}", b"") == expected, f"got {_classify_file(f'file.{ext}', b'')}")
-
-    print("\n── _classify_file: media by magic bytes (wrong/no extension) ──")
-    # Real media content with misleading extensions — magic bytes should win
-    R.check("RIFF/WAVE magic → media", _classify_file("file.dat", b"RIFF\x00\x00\x00\x00WAVE") == "media", "")
-    R.check("RIFF/AVI magic → media", _classify_file("file.bin", b"RIFF\x00\x00\x00\x00AVI ") == "media", "")
-    R.check("ID3 magic → media", _classify_file("file.bin", b"ID3\x03\x00") == "media", "")
-    R.check("fLaC magic → media", _classify_file("file.bin", b"fLaC\x00\x00") == "media", "")
-    R.check("OggS magic → media", _classify_file("file.bin", b"OggS\x00\x00") == "media", "")
-    R.check("ftyp magic → media", _classify_file("file.bin", b"\x00\x00\x00\x1cftypisom") == "media", "")
-    R.check("EBML magic → media", _classify_file("file.bin", b"\x1a\x45\xdf\xa3") == "media", "")
-
-    print("\n── _classify_file: text by content ──")
-    R.check("valid UTF-8 is text", _classify_file("file.unknown", b"hello world") == "text", "")
-    R.check("empty file is text", _classify_file("noext", b"") == "text", "")
-    R.check("UTF-8 with BOM is text", _classify_file("f.cfg", b"\xef\xbb\xbfhello") == "text", "")
-
-    print("\n── _classify_file: binary by content ──")
-    R.check("invalid UTF-8 is binary", _classify_file("file.dat", b"\x80\x81\x82") == "binary", "")
-    R.check("null bytes are valid UTF-8 (text)", _classify_file("file.bin", b"hello\x00world") == "text", "")
-    R.check(".exe classified by extension", _classify_file("file.exe", b"hello\x00world") == "binary", "")
-
-
-async def test_unit_sniff_media(R: Results):
-    from lathe import _sniff_media_mime
-
-    print("\n── _sniff_media_mime: WAV ──")
-    R.check("WAV detected", _sniff_media_mime(b"RIFF\x00\x00\x00\x00WAVE") == "audio/wav", "")
-
-    print("\n── _sniff_media_mime: AVI ──")
-    R.check("AVI detected", _sniff_media_mime(b"RIFF\x00\x00\x00\x00AVI ") == "video/x-msvideo", "")
-
-    print("\n── _sniff_media_mime: MP3 (ID3) ──")
-    R.check("MP3 ID3 detected", _sniff_media_mime(b"ID3\x03\x00\x00\x00") == "audio/mpeg", "")
-
-    print("\n── _sniff_media_mime: MP3 (sync word) ──")
-    R.check("MP3 sync detected", _sniff_media_mime(b"\xff\xfb\x90\x00") == "audio/mpeg", "")
-
-    print("\n── _sniff_media_mime: FLAC ──")
-    R.check("FLAC detected", _sniff_media_mime(b"fLaC\x00\x00\x00\x22") == "audio/flac", "")
-
-    print("\n── _sniff_media_mime: Ogg ──")
-    R.check("Ogg detected", _sniff_media_mime(b"OggS\x00\x02\x00\x00") == "audio/ogg", "")
-
-    print("\n── _sniff_media_mime: MP4 (isom) ──")
-    R.check("MP4 isom detected", _sniff_media_mime(b"\x00\x00\x00\x1cftypisom") == "video/mp4", "")
-
-    print("\n── _sniff_media_mime: M4A ──")
-    R.check("M4A detected", _sniff_media_mime(b"\x00\x00\x00\x1cftypM4A ") == "audio/mp4", "")
-
-    print("\n── _sniff_media_mime: QuickTime ──")
-    R.check("MOV detected", _sniff_media_mime(b"\x00\x00\x00\x14ftypqt  ") == "video/quicktime", "")
-
-    print("\n── _sniff_media_mime: WebM ──")
-    webm_header = b"\x1a\x45\xdf\xa3" + b"\x00" * 20 + b"webm" + b"\x00" * 36
-    R.check("WebM detected", _sniff_media_mime(webm_header) == "video/webm", "")
-
-    print("\n── _sniff_media_mime: MKV ──")
-    R.check("MKV detected", _sniff_media_mime(b"\x1a\x45\xdf\xa3\x01\x00\x00") == "video/x-matroska", "")
-
-    print("\n── _sniff_media_mime: non-media ──")
-    R.check("empty returns None", _sniff_media_mime(b"") is None, "")
-    R.check("short returns None", _sniff_media_mime(b"\x00\x01") is None, "")
-    R.check("text returns None", _sniff_media_mime(b"hello world") is None, "")
-    R.check("PNG returns None", _sniff_media_mime(b"\x89PNG\r\n\x1a\n") is None, "")
-    R.check("ZIP returns None", _sniff_media_mime(b"PK\x03\x04") is None, "")
-
-
-async def test_unit_render_media_html(R: Results):
-    from lathe import _render_media_html, _media_mime
-
-    # Build minimal real-ish media bytes for tests
-    wav_bytes = b"RIFF\x00\x00\x00\x00WAVEfmt "
-    mp4_bytes = b"\x00\x00\x00\x1cftypisom\x00\x00\x02\x00"
-    mp3_bytes = b"ID3\x03\x00\x00\x00\x00\x00\x00"
-
-    print("\n── _render_media_html: video (mp4) ──")
-    html = _render_media_html(mp4_bytes, "clip.mp4", "/tmp/clip.mp4")
-    R.check("mp4 has <video> tag", "<video controls" in html, "")
-    R.check("mp4 has video/mp4 mime", "video/mp4" in html, "")
-    R.check("mp4 has Save button", "saveFile" in html, "")
-    R.check("mp4 has resize observer", "ResizeObserver" in html, "")
-    R.check("mp4 has no <audio>", "<audio" not in html, "")
-
-    print("\n── _render_media_html: audio (wav) ──")
-    html = _render_media_html(wav_bytes, "beep.wav", "/tmp/beep.wav")
-    R.check("wav has <audio> tag", "<audio controls" in html, "")
-    R.check("wav has audio/wav mime", "audio/wav" in html, "")
-    R.check("wav has no <video>", "<video" not in html, "")
-
-    print("\n── _render_media_html: audio (mp3) ──")
-    html = _render_media_html(mp3_bytes, "song.mp3", "/tmp/song.mp3")
-    R.check("mp3 has <audio> tag", "<audio controls" in html, "")
-    R.check("mp3 has audio/mpeg mime", "audio/mpeg" in html, "")
-
-    # Note: oversized-fallback test removed — media is always offloaded to OWUI
-    # storage before reaching _render_media_html; this function always embeds.
-
-    print("\n── _render_media_html: magic-detected file with wrong extension ──")
-    html = _render_media_html(wav_bytes, "mystery.bin", "/tmp/mystery.bin")
-    R.check("magic sniff finds WAV in .bin", "<audio controls" in html, "")
-    R.check("magic sniff uses audio/wav", "audio/wav" in html, "")
-
-
-async def test_unit_render_html(R: Results):
-    from lathe import _render_image_html, _render_binary_html
-
-    print("\n── _render_image_html: structure ──")
-    img_html = _render_image_html(b"\x89PNG fake", "photo.png", "dir/photo.png")
-    R.check("image html has doctype", "<!DOCTYPE html>" in img_html, "")
-    R.check("image html has img tag", "<img " in img_html, "")
-    R.check("image html has correct mime", "image/png" in img_html, "")
-    R.check("image html has filename", "photo.png" in img_html, "")
-    R.check("image html has byte count", "9" in img_html, "should show 9 bytes")
-    R.check("image html has save function", "saveFile" in img_html, "")
-    R.check("image html has resize observer", "ResizeObserver" in img_html, "")
-
-    print("\n── _render_binary_html: structure ──")
-    bin_html = _render_binary_html(b"\x00" * 100, "data.zip", "path/data.zip")
-    R.check("binary html has doctype", "<!DOCTYPE html>" in bin_html, "")
-    R.check("binary html has filename", "data.zip" in bin_html, "")
-    R.check("binary html shows ZIP type", "ZIP" in bin_html, "")
-    R.check("binary html always has saveFile", "saveFile" in bin_html, "")
-    R.check("binary html has resize observer", "ResizeObserver" in bin_html, "")
-
-    # Note: large-file / too-large-to-embed test removed — binary files are always
-    # offloaded to OWUI storage before reaching _render_binary_html; this function
-    # always embeds content for the Save button.
-
-    print("\n── _render_binary_html: human-readable sizes ──")
-    html_1b = _render_binary_html(b"\x00", "f.bin", "f.bin")
-    R.check("1 byte shows as bytes", "1 B" in html_1b, "")
-    html_1kb = _render_binary_html(b"\x00" * 2048, "f.bin", "f.bin")
-    R.check("2048 bytes shows as KB", "KB" in html_1kb, "")
-    html_1mb = _render_binary_html(b"\x00" * (2 * 1024 * 1024), "f.bin", "f.bin")
-    R.check("2MB shows as MB", "MB" in html_1mb, "")
-
-
-async def test_unit_highlight(R: Results):
-    from lathe import _highlight_code
-
-    print("\n── _highlight_code: Python ──")
-    hl = _highlight_code('def foo():\n    return 42\n', "test.py")
-    R.check("highlight produces spans", "<span" in hl, hl[:100])
-    R.check("highlight has inline styles", 'style="' in hl, hl[:100])
-    R.check("highlight preserves content", "foo" in hl and "42" in hl, hl[:100])
-
-    print("\n── _highlight_code: unknown extension ──")
-    hl_unk = _highlight_code("just text", "file.unknownext")
-    R.check("unknown ext still produces output", "just text" in hl_unk, hl_unk[:100])
-
-    print("\n── _highlight_code: no extension ──")
-    hl_none = _highlight_code("raw content", "Makefile")
-    R.check("no-ext file produces output", "raw content" in hl_none or "content" in hl_none, hl_none[:100])
 
 
 async def test_unit_truncate(R: Results):
@@ -477,106 +292,6 @@ async def test_int_write_read_edit(R: Results, tools: Tools, user: dict):
 
     # cleanup
     await tools.bash("rm -rf workspace/test_file.txt workspace/dup_test.txt workspace/deep", __user__=user, __event_emitter__=mock_emitter)
-
-
-async def test_int_attach(R: Results, tools: Tools, user: dict):
-    from fastapi.responses import HTMLResponse
-    import base64
-    import re
-    import struct
-    import zlib as _zlib
-
-    # Setup: create test files concurrently
-    py_content = 'def greet(name):\n    return f"Hello, {name}!"\n\nprint(greet("world"))\n'
-    svg_content = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect fill="red" width="10" height="10"/></svg>'
-
-    def _make_tiny_png():
-        def _chunk(ctype, data):
-            c = ctype + data
-            return struct.pack(">I", len(data)) + c + struct.pack(">I", _zlib.crc32(c) & 0xFFFFFFFF)
-        sig = b"\x89PNG\r\n\x1a\n"
-        ihdr = _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
-        raw_row = b"\x00\xff\x00\x00"
-        idat = _chunk(b"IDAT", _zlib.compress(raw_row))
-        iend = _chunk(b"IEND", b"")
-        return sig + ihdr + idat + iend
-
-    png_b64 = base64.b64encode(_make_tiny_png()).decode()
-
-    await asyncio.gather(
-        tools.write("workspace/attach_test.py", py_content, __user__=user, __event_emitter__=mock_emitter),
-        tools.write("workspace/attach_test.txt", "just plain text\nno highlighting\n", __user__=user, __event_emitter__=mock_emitter),
-        tools.write("workspace/test_image.svg", svg_content, __user__=user, __event_emitter__=mock_emitter),
-        tools.bash(f"echo '{png_b64}' | base64 -d > /home/daytona/workspace/test_image.png", __user__=user, __event_emitter__=mock_emitter),
-    )
-
-    # Now run all attach tests concurrently
-    async def t_py():
-        print("\n── attach: Python file ──")
-        result = await tools.attach("workspace/attach_test.py", __user__=user, __event_emitter__=mock_emitter)
-        R.check("returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
-        body = result.body.decode("utf-8")
-        R.check("has Content-Disposition inline", result.headers.get("content-disposition") == "inline", result.headers.get("content-disposition", ""))
-        R.check("contains filename in header", "attach_test.py" in body, "")
-        R.check("contains line count", "4 lines" in body, "")
-        R.check("contains byte count", str(len(py_content.encode("utf-8"))) in body, "")
-        R.check("contains height reporting script", "iframe:height" in body, "")
-        R.check("contains copy button", "Copy" in body and "copyFile" in body, "")
-        R.check("contains save button", "Save" in body and "saveFile" in body, "")
-
-        print("\n── attach: syntax highlighting ──")
-        R.check("has Pygments highlighting spans", 'style="' in body and "<span" in body, "no inline styles found")
-        R.check("contains the function content", "greet" in body, "")
-
-        print("\n── attach: base64 round-trip ──")
-        b64_match = re.search(r'atob\("([A-Za-z0-9+/=]+)"\)', body)
-        R.check("base64 payload present", b64_match is not None, "no atob() found")
-        if b64_match:
-            decoded = base64.b64decode(b64_match.group(1)).decode("utf-8")
-            R.check("base64 decodes to original content", decoded == py_content, f"got {decoded[:80]}...")
-
-    async def t_txt():
-        print("\n── attach: plain text file ──")
-        result = await tools.attach("workspace/attach_test.txt", __user__=user, __event_emitter__=mock_emitter)
-        R.check("txt returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
-        body_txt = result.body.decode("utf-8")
-        R.check("txt contains content", "just plain text" in body_txt, "")
-        R.check("txt contains filename", "attach_test.txt" in body_txt, "")
-
-    async def t_notfound():
-        print("\n── attach: file not found ──")
-        result = await tools.attach("workspace/nonexistent_file.xyz", __user__=user, __event_emitter__=mock_emitter)
-        R.check("missing file returns error string", isinstance(result, str) and "Error" in result, str(result)[:200])
-
-    async def t_png():
-        print("\n── attach: PNG image ──")
-        result = await tools.attach("workspace/test_image.png", __user__=user, __event_emitter__=mock_emitter)
-        R.check("image returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
-        if not isinstance(result, HTMLResponse):
-            return
-        img_body = result.body.decode("utf-8")
-        R.check("image has <img> tag", "<img " in img_body, "")
-        R.check("image has data URI", "data:image/png;base64," in img_body, "")
-        R.check("image has filename", "test_image.png" in img_body, "")
-        R.check("image has Save button", "Save" in img_body and "saveFile" in img_body, "")
-        R.check("image does NOT have Copy button", "copyFile" not in img_body, "image shouldn't have Copy")
-        R.check("image does NOT have line numbers", "gutter" not in img_body, "image shouldn't have line gutter")
-        R.check("image has height reporting", "iframe:height" in img_body, "")
-
-    async def t_svg():
-        print("\n── attach: SVG image ──")
-        result = await tools.attach("workspace/test_image.svg", __user__=user, __event_emitter__=mock_emitter)
-        R.check("SVG returns HTMLResponse", isinstance(result, HTMLResponse), type(result).__name__)
-        if not isinstance(result, HTMLResponse):
-            return
-        svg_body = result.body.decode("utf-8")
-        R.check("SVG renders as image not code", "<img " in svg_body, "SVG should render as <img>")
-        R.check("SVG has correct MIME", "image/svg+xml" in svg_body, "")
-
-    await asyncio.gather(t_py(), t_txt(), t_notfound(), t_png(), t_svg())
-
-    # cleanup
-    await tools.bash("rm -f workspace/attach_test.py workspace/attach_test.txt workspace/test_image.png workspace/test_image.svg", __user__=user, __event_emitter__=mock_emitter)
 
 
 async def test_int_onboard(R: Results, tools: Tools, user: dict):
@@ -1045,62 +760,43 @@ async def test_int_fetch(R: Results, tools: Tools, user: dict):
     )
 
 
-async def test_int_ssh(R: Results, tools: Tools, user: dict):
+async def test_int_expose(R: Results, tools: Tools, user: dict):
 
-    print("\n── ssh: invalid expires_in_minutes (too low) ──")
-    r = await tools.ssh(expires_in_minutes=0, __user__=user, __event_emitter__=mock_emitter)
-    R.check("expires_in_minutes=0 rejected", "Error" in r and "1" in r, r[:200])
-
-    print("\n── ssh: invalid expires_in_minutes (too high) ──")
-    r = await tools.ssh(expires_in_minutes=1441, __user__=user, __event_emitter__=mock_emitter)
-    R.check("expires_in_minutes=1441 rejected", "Error" in r and "1440" in r, r[:200])
-
-    print("\n── ssh: generate SSH access (default 60 min) ──")
-    r = await tools.ssh(__user__=user, __event_emitter__=mock_emitter)
-    R.check("ssh returns command", "ssh" in r.lower(), r[:300])
-    R.check("mentions validity", "60 min" in r, r[:300])
-    R.check("contains ssh command block", "```" in r, r[:300])
-
-    print("\n── ssh: generate SSH access (custom 30 min) ──")
-    r = await tools.ssh(expires_in_minutes=30, __user__=user, __event_emitter__=mock_emitter)
-    R.check("custom expiry returns command", "ssh" in r.lower(), r[:300])
-    R.check("mentions 30 min", "30 min" in r, r[:300])
-
-
-async def test_int_preview(R: Results, tools: Tools, user: dict):
-
-    print("\n── preview: invalid port (too low) ──")
-    r = await tools.preview(port=80, __user__=user, __event_emitter__=mock_emitter)
+    print("\n── expose: invalid port (too low) ──")
+    r = await tools.expose(port=80, __user__=user, __event_emitter__=mock_emitter)
     R.check("port 80 rejected", "Error" in r and "3000" in r, r[:200])
 
-    print("\n── preview: invalid port (too high) ──")
-    r = await tools.preview(port=10000, __user__=user, __event_emitter__=mock_emitter)
+    print("\n── expose: invalid port (too high) ──")
+    r = await tools.expose(port=10000, __user__=user, __event_emitter__=mock_emitter)
     R.check("port 10000 rejected", "Error" in r and "9999" in r, r[:200])
 
-    print("\n── preview: start a server then get preview URL ──")
-    # Start a simple HTTP server in the background on port 8080
+    print("\n── expose: no port and no ssh ──")
+    r = await tools.expose(__user__=user, __event_emitter__=mock_emitter)
+    R.check("default args rejected", "Error" in r, r[:200])
+
+    print("\n── expose: start a server then get URL ──")
     await tools.bash(
         "python3 -m http.server 8080 &",
         __user__=user,
         __event_emitter__=mock_emitter,
     )
-    # Give the server a moment to start
     import asyncio as _asyncio
     await _asyncio.sleep(1)
 
-    r = await tools.preview(port=8080, __user__=user, __event_emitter__=mock_emitter)
-    R.check("preview returns URL", "Preview URL" in r, r[:300])
+    r = await tools.expose(port=8080, __user__=user, __event_emitter__=mock_emitter)
+    R.check("expose returns URL", "Public URL" in r, r[:300])
     R.check("URL contains https://", "https://" in r, r[:300])
     R.check("mentions 1 hour validity", "1 hour" in r, r[:300])
-    R.check("mentions Daytona warning", "warning" in r.lower(), r[:300])
-
-    print("\n── preview: default port ──")
-    r = await tools.preview(__user__=user, __event_emitter__=mock_emitter)
-    # Port 3000 may not have a listener, but the API should still return a URL
-    R.check("default port returns URL", "Preview URL" in r or "Error" in r, r[:300])
+    R.check("mentions warning", "warning" in r.lower(), r[:300])
 
     # Clean up the background server
     await tools.bash("pkill -f 'http.server 8080' || true", __user__=user, __event_emitter__=mock_emitter)
+
+    print("\n── expose: SSH access ──")
+    r = await tools.expose(ssh=True, __user__=user, __event_emitter__=mock_emitter)
+    R.check("ssh returns command", "ssh" in r.lower(), r[:300])
+    R.check("mentions validity", "60 min" in r, r[:300])
+    R.check("contains ssh command block", "```" in r, r[:300])
 
 
 async def test_int_destroy(R: Results, tools: Tools, user: dict):
@@ -1174,25 +870,18 @@ async def test_int_destroy(R: Results, tools: Tools, user: dict):
 
 UNIT_GROUPS = {
     "parse_env_vars": test_unit_parse_env_vars,
-    "classify_file": test_unit_classify_file,
-    "sniff_media": test_unit_sniff_media,
-    "render_media_html": test_unit_render_media_html,
-    "render_html": test_unit_render_html,
-    "highlight": test_unit_highlight,
     "truncate": test_unit_truncate,
 }
 
 INTEGRATION_GROUPS = {
     "bash": test_int_bash,
     "write_read_edit": test_int_write_read_edit,
-    "attach": test_int_attach,
     "onboard": test_int_onboard,
     "truncation": test_int_truncation,
     "bash_sessions": test_int_bash_sessions,
     "env_vars": test_int_env_vars,
     "fetch": test_int_fetch,
-    "ssh": test_int_ssh,
-    "preview": test_int_preview,
+    "expose": test_int_expose,
     "ensure_sandbox": test_int_ensure_sandbox,
     "destroy": test_int_destroy,  # must run last among integration tests
 }
