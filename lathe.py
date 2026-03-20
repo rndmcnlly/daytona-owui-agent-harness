@@ -5,7 +5,7 @@ author_url: https://adamsmith.as
 description: Coding agent tools (lathe, bash, read, write, edit, onboard, expose, fetch, destroy) backed by per-user sandbox VMs with transparent lifecycle management.
 required_open_webui_version: 0.4.0
 requirements: httpx, beautifulsoup4, markdownify
-version: 0.9.0
+version: 0.10.0
 licence: MIT
 """
 
