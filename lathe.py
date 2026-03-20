@@ -4,7 +4,7 @@ author: Adam Smith
 author_url: https://adamsmith.as
 description: Coding agent tools (lathe, bash, read, write, edit, onboard, expose, fetch, destroy) backed by per-user sandbox VMs with transparent lifecycle management.
 required_open_webui_version: 0.4.0
-requirements: httpx
+requirements: httpx, beautifulsoup4, markdownify
 version: 0.9.0
 licence: MIT
 """
@@ -568,19 +568,30 @@ class Tools:
             curl) to distinguish file paths from inline content:
 
               body="@workspace/req.json"   — read request body from file
-              body='{"query":"test"}'       — send literal string as body
+              body={"query":"test"}         — send literal JSON as body
 
               output="@workspace/resp.json" — write response body to file
               output="inline"               — return body in context
+              output="inline:1024"          — return body truncated to 1024 bytes
               output=""                     — discard body (default)
+
+              include_response_headers="important"  — content-type, content-length, location, rate-limit (default)
+              include_response_headers="all"        — every response header
+              include_response_headers="none"       — suppress response headers entirely
+
+              filter="markdown"  — convert HTML to markdown (strips scripts/styles)
+              filter="links"     — extract all links as text + href pairs
+              filter="meta"      — extract title, description, og/twitter tags
+
+              verify_ssl=false   — skip TLS certificate verification (self-signed certs, internal CAs)
 
             ## Quick API call (inline both ways)
 
             ```
             fetch(url="https://api.example.com/search",
                   method="POST",
-                  headers='{"Content-Type": "application/json"}',
-                  body='{"query": "test"}',
+                  headers={"Content-Type": "application/json"},
+                  body={"query": "test"},
                   output="inline")
             ```
             Response body appears directly in the tool result. No
@@ -597,10 +608,10 @@ class Tools:
             ## POST with a file body
 
             ```
-            write("workspace/payload.json", '{"big": "data..."}')
+            write("workspace/payload.json", {"big": "data..."})
             fetch(url="https://api.example.com/upload",
                   method="POST",
-                  headers='{"Content-Type": "application/json"}',
+                  headers={"Content-Type": "application/json"},
                   body="@workspace/payload.json",
                   output="@workspace/results.json")
             ```
@@ -624,12 +635,12 @@ class Tools:
 
             ```
             fetch(url="https://docs.example.com/api/reference",
-                  headers='{"Accept": "text/html"}',
-                  output="@workspace/docs.html")
-            bash("python3 -c 'import sys,html2text; print(html2text.text(open(\"workspace/docs.html\").read()))' > workspace/docs.md",
-                 workdir="/home/daytona")
-            read("workspace/docs.md")
+                  filter="markdown",
+                  output="inline")
             ```
+            The filter converts HTML to clean markdown server-side —
+            no sandbox round-trip needed. Use filter="links" to
+            extract a link index, or filter="meta" for page metadata.
 
             ## Inline with auto-spill
 
@@ -1547,6 +1558,9 @@ class Tools:
         headers: str = "{}",
         body: str = "",
         output: str = "",
+        filter: str = "",
+        include_response_headers: str = "important",
+        verify_ssl: bool = True,
         __user__: dict = {},
         __event_emitter__=None,
     ) -> str:
@@ -1558,7 +1572,10 @@ class Tools:
         :param method: HTTP method: GET, POST, PUT, DELETE, PATCH, HEAD (default: GET).
         :param headers: JSON object of extra request headers, e.g. {"Accept": "text/html"}.
         :param body: Request body. "@path" reads from sandbox file; bare string is sent literally. Empty = no body.
-        :param output: Response body handling. "@path" writes to sandbox file; "inline" returns body in context (truncated); empty = discard (metadata only).
+        :param output: Response body handling. "@path" writes to sandbox file; "inline" returns body in context; "inline:N" truncates to N bytes; empty = discard (metadata only).
+        :param filter: Post-process HTML responses: "markdown" (convert to markdown), "links" (extract all links), "meta" (title + description + og tags). Empty = no filtering.
+        :param include_response_headers: How many response headers to show: "none", "important" (default — content-type, content-length, location, etc.), or "all".
+        :param verify_ssl: Verify TLS certificates. Set false for self-signed certs (default: true).
         """
         async def _run(client):
             email = _get_email(__user__)
@@ -1604,33 +1621,45 @@ class Tools:
             # ── resolve output mode ──────────────────────────────────
             output_mode = "discard"  # "discard" | "file" | "inline"
             output_path = ""
+            inline_caller_limit = 0  # 0 = no caller override
             if output:
+                out_stripped = output.strip().lower()
                 if output.startswith("@"):
                     output_mode = "file"
                     output_path = output[1:]
-                elif output.strip().lower() == "inline":
+                elif out_stripped == "inline" or out_stripped.startswith("inline:"):
                     output_mode = "inline"
+                    if ":" in out_stripped:
+                        try:
+                            inline_caller_limit = int(out_stripped.split(":", 1)[1])
+                            if inline_caller_limit <= 0:
+                                return "Error: inline byte limit must be a positive integer, e.g. output=\"inline:1024\""
+                        except ValueError:
+                            return "Error: invalid inline limit — use output=\"inline:1024\" (bytes)"
                 else:
                     # Treat any other non-empty string as a file path
                     # (backwards-compatible with bare paths)
                     output_mode = "file"
                     output_path = output
 
-            # ── make the HTTP request from the OWUI server ───────────
+            # ── make the HTTP request from a dedicated client ────────
+            # Separate from the Daytona API client: different trust
+            # boundary, different timeout, optional TLS bypass.
             await _emit(__event_emitter__, f"{norm_method} {url}...")
 
             max_bytes = self.valves.fetch_max_response_bytes
             timeout_s = float(max(1, self.valves.fetch_timeout_seconds))
 
             try:
-                fetch_resp = await client.request(
-                    norm_method,
-                    url,
-                    headers=req_headers,
-                    content=req_body,
-                    timeout=timeout_s,
-                    follow_redirects=True,
-                )
+                async with httpx.AsyncClient(verify=verify_ssl) as fetch_client:
+                    fetch_resp = await fetch_client.request(
+                        norm_method,
+                        url,
+                        headers=req_headers,
+                        content=req_body,
+                        timeout=timeout_s,
+                        follow_redirects=True,
+                    )
             except httpx.TimeoutException:
                 await _emit(__event_emitter__, "Request timed out", done=True)
                 return f"Error: Request timed out after {int(timeout_s)}s"
@@ -1651,6 +1680,69 @@ class Tools:
                     f"exceeding the {_human_size(max_bytes)} limit. "
                     f"Ask an admin to increase fetch_max_response_bytes if needed."
                 )
+
+            # ── apply filter (HTML post-processing) ───────────────────
+            filter_warning = ""
+            filter_mode = filter.strip().lower() if filter else ""
+            if filter_mode:
+                if filter_mode not in ("markdown", "links", "meta"):
+                    return f"Error: filter must be \"markdown\", \"links\", or \"meta\". Got: {filter}"
+
+                content_type = resp_headers.get("content-type", "")
+                is_html = "html" in content_type or "xhtml" in content_type
+                if not is_html and resp_body:
+                    filter_warning = (
+                        f"Warning: filter=\"{filter_mode}\" is intended for HTML, "
+                        f"but response content-type is \"{content_type}\". "
+                        f"Applying anyway.\n"
+                    )
+
+                if resp_body:
+                    try:
+                        from bs4 import BeautifulSoup
+                        html_text = resp_body.decode("utf-8", errors="replace")
+                        soup = BeautifulSoup(html_text, "html.parser")
+                        filtered = ""
+
+                        if filter_mode == "markdown":
+                            from markdownify import markdownify as md
+                            # Remove script/style noise before converting
+                            for tag in soup(["script", "style", "noscript"]):
+                                tag.decompose()
+                            filtered = md(str(soup), heading_style="ATX", strip=["img"])
+                            # Collapse excessive blank lines
+                            import re
+                            filtered = re.sub(r"\n{3,}", "\n\n", filtered).strip()
+
+                        elif filter_mode == "links":
+                            links = []
+                            for a in soup.find_all("a", href=True):
+                                href = a["href"]
+                                text = a.get_text(strip=True)
+                                if text:
+                                    links.append(f"  {text} — {href}")
+                                else:
+                                    links.append(f"  {href}")
+                            filtered = f"{len(links)} links found:\n" + "\n".join(links) if links else "No links found."
+
+                        elif filter_mode == "meta":
+                            parts = []
+                            title_tag = soup.find("title")
+                            if title_tag:
+                                parts.append(f"Title: {title_tag.get_text(strip=True)}")
+                            for meta in soup.find_all("meta"):
+                                name = meta.get("name", meta.get("property", "")).lower()
+                                content = meta.get("content", "")
+                                if name in ("description", "og:title", "og:description",
+                                            "og:image", "og:url", "og:type", "og:site_name",
+                                            "twitter:title", "twitter:description",
+                                            "twitter:image", "twitter:card"):
+                                    parts.append(f"{name}: {content}")
+                            filtered = "\n".join(parts) if parts else "No metadata found."
+
+                        resp_body = filtered.encode("utf-8")
+                    except Exception as exc:
+                        filter_warning += f"Warning: filter=\"{filter_mode}\" failed: {exc}. Returning unfiltered body.\n"
 
             # ── handle response body disposition ─────────────────────
             body_disposition = ""
@@ -1680,14 +1772,27 @@ class Tools:
                 body_disposition = f"Written to {output_path} ({_human_size(len(resp_body))})"
 
             elif output_mode == "inline" and resp_body:
-                inline_limit = self.valves.fetch_inline_max_bytes
-                if len(resp_body) <= inline_limit:
+                system_limit = self.valves.fetch_inline_max_bytes
+                effective_limit = min(inline_caller_limit, system_limit) if inline_caller_limit else system_limit
+
+                if len(resp_body) <= effective_limit:
                     # Small enough to return directly
                     try:
                         inline_body = resp_body.decode("utf-8")
                     except UnicodeDecodeError:
                         inline_body = resp_body.decode("latin-1")
                     body_disposition = f"Inline ({_human_size(len(resp_body))})"
+                elif inline_caller_limit and len(resp_body) <= system_limit:
+                    # Fits in system limit but exceeds caller limit — truncate
+                    truncated = resp_body[:effective_limit]
+                    try:
+                        inline_body = truncated.decode("utf-8", errors="replace")
+                    except UnicodeDecodeError:
+                        inline_body = truncated.decode("latin-1")
+                    body_disposition = (
+                        f"Inline, truncated ({_human_size(effective_limit)} of "
+                        f"{_human_size(len(resp_body))} shown)"
+                    )
                 else:
                     # Too large for inline — auto-spill to temp file
                     spill_path = f"/tmp/fetch_{uuid.uuid4().hex[:12]}"
@@ -1702,7 +1807,7 @@ class Tools:
                     upload_resp.raise_for_status()
                     body_disposition = (
                         f"Too large for inline ({_human_size(len(resp_body))} > "
-                        f"{_human_size(inline_limit)} limit). "
+                        f"{_human_size(system_limit)} limit). "
                         f"Written to {spill_path} — use read() to inspect."
                     )
 
@@ -1719,29 +1824,48 @@ class Tools:
                 redirect_note = f"Redirected-To: {final_url}\n"
 
             # ── format response metadata ─────────────────────────────
-            header_lines = []
-            for k, v in resp_headers.items():
-                if k.lower() in ("set-cookie",):
-                    header_lines.append(f"  {k}: (omitted)")
-                    continue
-                display_v = v if len(v) <= 512 else v[:512] + "..."
-                header_lines.append(f"  {k}: {display_v}")
-            headers_block = "\n".join(header_lines) if header_lines else "  (none)"
+            rh_mode = include_response_headers.strip().lower() if include_response_headers else "important"
+            if rh_mode not in ("none", "important", "all"):
+                rh_mode = "important"
+
+            IMPORTANT_HEADERS = {
+                "content-type", "content-length", "content-disposition",
+                "content-encoding", "location", "retry-after",
+                "www-authenticate", "x-ratelimit-remaining",
+                "x-ratelimit-limit", "x-ratelimit-reset",
+            }
+
+            headers_block = ""
+            if rh_mode != "none":
+                header_lines = []
+                for k, v in resp_headers.items():
+                    kl = k.lower()
+                    if kl in ("set-cookie",):
+                        if rh_mode == "all":
+                            header_lines.append(f"  {k}: (omitted)")
+                        continue
+                    if rh_mode == "important" and kl not in IMPORTANT_HEADERS:
+                        continue
+                    display_v = v if len(v) <= 512 else v[:512] + "..."
+                    header_lines.append(f"  {k}: {display_v}")
+                if header_lines:
+                    headers_block = "\nResponse headers:\n" + "\n".join(header_lines)
 
             await _emit(__event_emitter__, f"HTTP {status_code}", done=True)
 
             result = (
                 f"HTTP {status_code} {reason}\n"
                 f"{redirect_note}"
-                f"Response-Body: {body_disposition}\n"
-                f"\n"
-                f"Response headers:\n"
+                f"Response-Body: {body_disposition}"
                 f"{headers_block}"
             )
 
             # Append inline body after metadata if present
             if inline_body:
                 result += f"\n\n--- response body ---\n{inline_body}"
+
+            if filter_warning:
+                result = filter_warning + result
 
             return _prepend_warning(result, _sb_warning)
 
