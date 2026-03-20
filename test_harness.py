@@ -907,6 +907,144 @@ async def test_int_ensure_sandbox(R: Results, tools: Tools, user: dict):
                  f"exitCode={data.get('exitCode')}, result={data.get('result', '')[:200]}")
 
 
+async def test_int_fetch(R: Results, tools: Tools, user: dict):
+
+    print("\n── fetch: simple GET to file ──")
+    r = await tools.fetch(
+        url="https://httpbin.org/get",
+        output="@workspace/fetch_test_get.json",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    R.check("GET returns HTTP 200", "HTTP 200" in r, r[:300])
+    R.check("GET writes to file", "Written to" in r and "fetch_test_get.json" in r, r[:300])
+    R.check("GET shows response headers", "content-type" in r.lower() or "Content-Type" in r, r[:500])
+
+    # Verify the file actually landed in the sandbox
+    verify = await tools.bash("cat workspace/fetch_test_get.json | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d[\"url\"])'",
+                              __user__=user, __event_emitter__=mock_emitter)
+    R.check("GET response body is valid JSON with url field", "httpbin.org/get" in verify, verify[:200])
+
+    print("\n── fetch: inline GET (small response in context) ──")
+    r = await tools.fetch(
+        url="https://httpbin.org/get",
+        output="inline",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    R.check("inline GET returns HTTP 200", "HTTP 200" in r, r[:300])
+    R.check("inline GET has response body in context", "response body" in r.lower(), r[:300])
+    R.check("inline GET contains actual content", "httpbin.org" in r, r[:500])
+
+    print("\n── fetch: HEAD request (no body) ──")
+    r = await tools.fetch(
+        url="https://httpbin.org/get",
+        method="HEAD",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    R.check("HEAD returns HTTP 200", "HTTP 200" in r, r[:300])
+    R.check("HEAD says no body", "No body" in r or "HEAD request" in r, r[:300])
+
+    print("\n── fetch: POST with inline body ──")
+    r = await tools.fetch(
+        url="https://httpbin.org/post",
+        method="POST",
+        headers='{"Content-Type": "application/json"}',
+        body='{"hello":"world"}',
+        output="inline",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    R.check("inline POST returns HTTP 200", "HTTP 200" in r, r[:300])
+    R.check("inline POST echoes body", "hello" in r and "world" in r, r[:500])
+
+    print("\n── fetch: POST with @file body ──")
+    await tools.write("workspace/fetch_test_payload.json", '{"from_file":"yes"}',
+                      __user__=user, __event_emitter__=mock_emitter)
+    r = await tools.fetch(
+        url="https://httpbin.org/post",
+        method="POST",
+        headers='{"Content-Type": "application/json"}',
+        body="@workspace/fetch_test_payload.json",
+        output="@workspace/fetch_test_post_result.json",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    R.check("file POST returns HTTP 200", "HTTP 200" in r, r[:300])
+    R.check("file POST writes output", "Written to" in r, r[:300])
+
+    verify = await tools.bash(
+        "python3 -c 'import json; d=json.load(open(\"workspace/fetch_test_post_result.json\")); print(d[\"data\"])'",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    R.check("file POST body was sent correctly", "from_file" in verify, verify[:200])
+
+    print("\n── fetch: discard mode (no output) ──")
+    r = await tools.fetch(
+        url="https://httpbin.org/get",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    R.check("discard returns metadata", "HTTP 200" in r, r[:300])
+    R.check("discard says discarded", "Discarded" in r, r[:300])
+
+    print("\n── fetch: redirect followed ──")
+    r = await tools.fetch(
+        url="https://httpbin.org/redirect/2",
+        output="@workspace/fetch_test_redirect.json",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    R.check("redirect returns HTTP 200", "HTTP 200" in r, r[:300])
+    R.check("redirect shows final URL", "Redirected-To" in r, r[:500])
+
+    print("\n── fetch: 404 error ──")
+    r = await tools.fetch(
+        url="https://httpbin.org/status/404",
+        output="@workspace/fetch_test_404.txt",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+    R.check("404 returns HTTP 404", "HTTP 404" in r, r[:300])
+
+    async def t_bad_method():
+        print("\n── fetch: invalid method ──")
+        r = await tools.fetch(
+            url="https://httpbin.org/get",
+            method="FOOBAR",
+            __user__=user, __event_emitter__=mock_emitter,
+        )
+        R.check("invalid method rejected", "Error" in r and "FOOBAR" in r, r[:300])
+
+    async def t_bad_url():
+        print("\n── fetch: invalid URL ──")
+        r = await tools.fetch(
+            url="not-a-url",
+            __user__=user, __event_emitter__=mock_emitter,
+        )
+        R.check("invalid URL rejected", "Error" in r and "http" in r.lower(), r[:300])
+
+    async def t_bad_headers():
+        print("\n── fetch: invalid headers JSON ──")
+        r = await tools.fetch(
+            url="https://httpbin.org/get",
+            headers="not json",
+            __user__=user, __event_emitter__=mock_emitter,
+        )
+        R.check("invalid headers rejected", "Error" in r and "JSON" in r, r[:300])
+
+    async def t_bad_body_file():
+        print("\n── fetch: @body file not found ──")
+        r = await tools.fetch(
+            url="https://httpbin.org/post",
+            method="POST",
+            body="@workspace/nonexistent_body.txt",
+            __user__=user, __event_emitter__=mock_emitter,
+        )
+        R.check("missing @body file rejected", "Error" in r and "not found" in r.lower(), r[:300])
+
+    await asyncio.gather(t_bad_method(), t_bad_url(), t_bad_headers(), t_bad_body_file())
+
+    # cleanup
+    await tools.bash(
+        "rm -f workspace/fetch_test_*.json workspace/fetch_test_*.txt workspace/fetch_test_payload.json",
+        __user__=user, __event_emitter__=mock_emitter,
+    )
+
+
 async def test_int_ssh(R: Results, tools: Tools, user: dict):
 
     print("\n── ssh: invalid expires_in_minutes (too low) ──")
@@ -1052,6 +1190,7 @@ INTEGRATION_GROUPS = {
     "truncation": test_int_truncation,
     "bash_sessions": test_int_bash_sessions,
     "env_vars": test_int_env_vars,
+    "fetch": test_int_fetch,
     "ssh": test_int_ssh,
     "preview": test_int_preview,
     "ensure_sandbox": test_int_ensure_sandbox,

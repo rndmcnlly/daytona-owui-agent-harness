@@ -2,7 +2,7 @@
 title: Lathe
 author: Adam Smith
 author_url: https://adamsmith.as
-description: Coding agent tools (lathe, bash, read, write, edit, attach, ingest, onboard, ssh, preview, destroy) backed by per-user sandbox VMs with transparent lifecycle management.
+description: Coding agent tools (lathe, bash, read, write, edit, attach, ingest, onboard, ssh, preview, fetch, destroy) backed by per-user sandbox VMs with transparent lifecycle management.
 required_open_webui_version: 0.4.0
 requirements: httpx
 version: 0.8.0
@@ -1152,6 +1152,18 @@ class Tools:
             30,
             description="Seconds to wait for a bash command before auto-backgrounding it (1-300)",
         )
+        fetch_max_response_bytes: int = Field(
+            100 * 1024 * 1024,
+            description="Maximum response body size for fetch() in bytes (default: 100 MB)",
+        )
+        fetch_timeout_seconds: int = Field(
+            120,
+            description="HTTP timeout for fetch() requests in seconds (default: 120)",
+        )
+        fetch_inline_max_bytes: int = Field(
+            50 * 1024,
+            description="Maximum response body size for inline fetch() output in bytes (default: 50 KB). Larger responses auto-spill to a temp file.",
+        )
 
     class UserValves(BaseModel):
         env_vars: str = Field(
@@ -1196,6 +1208,112 @@ class Tools:
     #   breadcrumbs like 'see lathe(manpage="bash") for details'.
 
     _MANPAGES: dict[str, str] = {
+        "fetch": textwrap.dedent("""\
+            # Lathe — fetch() patterns
+
+            fetch() makes HTTP requests from the OWUI server, bypassing
+            sandbox egress restrictions. Uses a @-prefix convention (like
+            curl) to distinguish file paths from inline content:
+
+              body="@workspace/req.json"   — read request body from file
+              body='{"query":"test"}'       — send literal string as body
+
+              output="@workspace/resp.json" — write response body to file
+              output="inline"               — return body in context
+              output=""                     — discard body (default)
+
+            ## Quick API call (inline both ways)
+
+            ```
+            fetch(url="https://api.example.com/search",
+                  method="POST",
+                  headers='{"Content-Type": "application/json"}',
+                  body='{"query": "test"}',
+                  output="inline")
+            ```
+            Response body appears directly in the tool result. No
+            round trips through write()/read().
+
+            ## Save response to file
+
+            ```
+            fetch(url="https://example.com/api/data",
+                  output="@workspace/data.json")
+            read("workspace/data.json")
+            ```
+
+            ## POST with a file body
+
+            ```
+            write("workspace/payload.json", '{"big": "data..."}')
+            fetch(url="https://api.example.com/upload",
+                  method="POST",
+                  headers='{"Content-Type": "application/json"}',
+                  body="@workspace/payload.json",
+                  output="@workspace/results.json")
+            ```
+
+            ## Download a binary artifact
+
+            ```
+            fetch(url="https://example.com/model.tar.gz",
+                  output="@workspace/model.tar.gz")
+            bash("tar xzf model.tar.gz", workdir="/home/daytona/workspace")
+            ```
+
+            ## Check availability (HEAD)
+
+            ```
+            fetch(url="https://example.com/file.zip", method="HEAD")
+            ```
+            Returns status + headers without downloading the body.
+
+            ## Crawl documentation
+
+            ```
+            fetch(url="https://docs.example.com/api/reference",
+                  headers='{"Accept": "text/html"}',
+                  output="@workspace/docs.html")
+            bash("python3 -c 'import sys,html2text; print(html2text.text(open(\"workspace/docs.html\").read()))' > workspace/docs.md",
+                 workdir="/home/daytona")
+            read("workspace/docs.md")
+            ```
+
+            ## Inline with auto-spill
+
+            If output="inline" but the response exceeds the inline size
+            limit (~50 KB default), the body is automatically written to a
+            temp file and the tool result tells you where. Use read() to
+            inspect specific sections.
+
+            ## Working with APIs that require auth
+
+            The model cannot see UserValves secrets directly. To use a
+            secret as a request header, the user must set it in UserValves
+            env_vars, then:
+            ```
+            bash("echo -n $MY_API_KEY > /tmp/key.txt")
+            ```
+            Read the key from the sandbox and construct the headers param.
+            Alternatively, if the API is on the egress allowlist, just use
+            bash("curl ...") directly with $MY_API_KEY.
+
+            ## Limitations
+
+            - One request per call. No connection pooling or cookie jars
+              across calls.
+            - Redirects are followed automatically (up to 20 hops). The
+              metadata shows the final URL if it differs from the requested
+              one.
+            - Response body must fit in server memory during relay. Default
+              limit is 100 MB (admin-configurable via fetch_max_response_bytes).
+            - Inline responses are capped at ~50 KB (admin-configurable via
+              fetch_inline_max_bytes). Larger responses auto-spill to a temp file.
+            - fetch() does NOT replace ambient network access. Commands like
+              `pip install` or `git clone` to non-allowlisted hosts still
+              fail. Workaround: fetch() the artifact, then install from the
+              local file.
+            """),
         "background": textwrap.dedent("""\
             # Lathe — Background Jobs
 
@@ -1338,10 +1456,16 @@ class Tools:
               Groq, etc.), CDNs (Cloudflare, jsDelivr, unpkg), select cloud
               storage (S3, GCS), and common dev platforms (Vercel, Supabase,
               Sentry). Requests to other hosts will silently fail or time out.
-              If a task requires reaching an endpoint not on this list, warn
-              the user early — they may need to use ingest() to bring data in
-              from their local machine instead, or arrange access through an
-              allowlisted proxy.
+              Use fetch() to retrieve URLs the sandbox cannot reach directly —
+              the request is made from the server, bypassing egress restrictions.
+              Request and response bodies are read/written as sandbox files;
+              only HTTP metadata enters the conversation. Note: fetch() is
+              single-shot and does not provide ambient proxy access, so commands
+              like `pip install` or `git clone` to non-allowlisted hosts still
+              fail — use fetch() to download the artifact, then install from
+              the local file. See lathe(manpage="fetch") for patterns.
+              If fetch() isn't sufficient, the user can use ingest() to bring
+              data in from their local machine instead.
             """),
     }
 
@@ -1350,6 +1474,7 @@ class Tools:
     _MANPAGE_INDEX: dict[str, str] = {
         "overview": "Big-picture orientation: sandbox model, tool catalog, key workflows, gotchas.",
         "background": "Background job sidecar files, and peek/poll/kill recipes.",
+        "fetch": "Egress bypass patterns: GET/POST, downloads, crawling docs, API auth.",
     }
 
     async def lathe(
@@ -1359,7 +1484,7 @@ class Tools:
         __event_emitter__=None,
     ) -> str:
         """
-        Manual for the lathe toolkit: bash, read, write, edit, attach, ingest, onboard, preview, ssh, destroy. Default manpage: overview.
+        Manual for the lathe toolkit: bash, read, write, edit, attach, ingest, onboard, preview, ssh, fetch, destroy. Default manpage: overview.
         :param manpage: Which manual page to return. Use "overview" for big-picture orientation.
         """
         tool_catalog = _build_tool_catalog(self)
@@ -2656,5 +2781,212 @@ return await new Promise((resolve) => {{
                 f"Active SSH sessions keep the sandbox alive.",
                 _sb_warning,
             )
+
+        return await _tool_context(__event_emitter__, _run)
+
+    async def fetch(
+        self,
+        url: str,
+        method: str = "GET",
+        headers: str = "{}",
+        body: str = "",
+        output: str = "",
+        __user__: dict = {},
+        __event_emitter__=None,
+    ) -> str:
+        """
+        Fetch a URL via the server, bypassing sandbox egress restrictions.
+        Uses @-prefix convention (like curl) for file paths vs. inline content.
+        See lathe(manpage="fetch") for patterns.
+        :param url: The URL to fetch (http or https).
+        :param method: HTTP method: GET, POST, PUT, DELETE, PATCH, HEAD (default: GET).
+        :param headers: JSON object of extra request headers, e.g. {"Accept": "text/html"}.
+        :param body: Request body. "@path" reads from sandbox file; bare string is sent literally. Empty = no body.
+        :param output: Response body handling. "@path" writes to sandbox file; "inline" returns body in context (truncated); empty = discard (metadata only).
+        """
+        async def _run(client):
+            email = _get_email(__user__)
+            sandbox_id, _sb_warning = await _ensure_sandbox(self.valves, email, client, __event_emitter__)
+
+            # ── validate inputs ──────────────────────────────────────
+            allowed_methods = ("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD")
+            norm_method = method.strip().upper()
+            if norm_method not in allowed_methods:
+                return f"Error: method must be one of {', '.join(allowed_methods)}. Got: {method}"
+
+            if not url or not (url.startswith("http://") or url.startswith("https://")):
+                return "Error: url must start with http:// or https://"
+
+            try:
+                req_headers = json.loads(headers) if headers.strip() else {}
+                if not isinstance(req_headers, dict):
+                    return "Error: headers must be a JSON object, e.g. {\"Accept\": \"text/html\"}"
+            except (json.JSONDecodeError, ValueError) as exc:
+                return f"Error: headers is not valid JSON: {exc}"
+
+            # ── resolve request body ─────────────────────────────────
+            req_body: bytes | None = None
+            if body:
+                if body.startswith("@"):
+                    # Read from sandbox file
+                    body_path = body[1:]
+                    await _emit(__event_emitter__, f"Reading request body from {body_path}...")
+                    resp = await client.get(
+                        _toolbox(self.valves, sandbox_id, "/files/download"),
+                        params={"path": body_path},
+                        headers=_headers(self.valves),
+                        timeout=60.0,
+                    )
+                    if resp.status_code == 404:
+                        return f"Error: body file not found: {body_path}"
+                    resp.raise_for_status()
+                    req_body = resp.content
+                else:
+                    # Literal inline body
+                    req_body = body.encode("utf-8")
+
+            # ── resolve output mode ──────────────────────────────────
+            output_mode = "discard"  # "discard" | "file" | "inline"
+            output_path = ""
+            if output:
+                if output.startswith("@"):
+                    output_mode = "file"
+                    output_path = output[1:]
+                elif output.strip().lower() == "inline":
+                    output_mode = "inline"
+                else:
+                    # Treat any other non-empty string as a file path
+                    # (backwards-compatible with bare paths)
+                    output_mode = "file"
+                    output_path = output
+
+            # ── make the HTTP request from the OWUI server ───────────
+            await _emit(__event_emitter__, f"{norm_method} {url}...")
+
+            max_bytes = self.valves.fetch_max_response_bytes
+            timeout_s = float(max(1, self.valves.fetch_timeout_seconds))
+
+            try:
+                fetch_resp = await client.request(
+                    norm_method,
+                    url,
+                    headers=req_headers,
+                    content=req_body,
+                    timeout=timeout_s,
+                    follow_redirects=True,
+                )
+            except httpx.TimeoutException:
+                await _emit(__event_emitter__, "Request timed out", done=True)
+                return f"Error: Request timed out after {int(timeout_s)}s"
+            except httpx.RequestError as exc:
+                await _emit(__event_emitter__, "Request failed", done=True)
+                return f"Error: Request failed: {exc}"
+
+            status_code = fetch_resp.status_code
+            reason = fetch_resp.reason_phrase or ""
+            resp_headers = dict(fetch_resp.headers)
+            resp_body = fetch_resp.content
+
+            # ── enforce size limit ───────────────────────────────────
+            if len(resp_body) > max_bytes:
+                await _emit(__event_emitter__, "Response too large", done=True)
+                return (
+                    f"Error: Response body is {_human_size(len(resp_body))}, "
+                    f"exceeding the {_human_size(max_bytes)} limit. "
+                    f"Ask an admin to increase fetch_max_response_bytes if needed."
+                )
+
+            # ── handle response body disposition ─────────────────────
+            body_disposition = ""
+            inline_body = ""
+
+            if norm_method == "HEAD":
+                body_disposition = "No body (HEAD request)"
+
+            elif output_mode == "file" and resp_body:
+                await _emit(__event_emitter__, f"Writing response to {output_path}...")
+                parent = "/".join(output_path.rstrip("/").split("/")[:-1])
+                if parent:
+                    await client.post(
+                        _toolbox(self.valves, sandbox_id, "/files/folder"),
+                        headers=_headers(self.valves),
+                        json={"path": parent, "mode": "755"},
+                        timeout=30.0,
+                    )
+                upload_resp = await client.post(
+                    _toolbox(self.valves, sandbox_id, "/files/upload"),
+                    params={"path": output_path},
+                    headers={"Authorization": f"Bearer {self.valves.daytona_api_key}"},
+                    files={"file": ("file", io.BytesIO(resp_body), "application/octet-stream")},
+                    timeout=120.0,
+                )
+                upload_resp.raise_for_status()
+                body_disposition = f"Written to {output_path} ({_human_size(len(resp_body))})"
+
+            elif output_mode == "inline" and resp_body:
+                inline_limit = self.valves.fetch_inline_max_bytes
+                if len(resp_body) <= inline_limit:
+                    # Small enough to return directly
+                    try:
+                        inline_body = resp_body.decode("utf-8")
+                    except UnicodeDecodeError:
+                        inline_body = resp_body.decode("latin-1")
+                    body_disposition = f"Inline ({_human_size(len(resp_body))})"
+                else:
+                    # Too large for inline — auto-spill to temp file
+                    spill_path = f"/tmp/fetch_{uuid.uuid4().hex[:12]}"
+                    await _emit(__event_emitter__, f"Response too large for inline ({_human_size(len(resp_body))}), spilling to {spill_path}...")
+                    upload_resp = await client.post(
+                        _toolbox(self.valves, sandbox_id, "/files/upload"),
+                        params={"path": spill_path},
+                        headers={"Authorization": f"Bearer {self.valves.daytona_api_key}"},
+                        files={"file": ("file", io.BytesIO(resp_body), "application/octet-stream")},
+                        timeout=120.0,
+                    )
+                    upload_resp.raise_for_status()
+                    body_disposition = (
+                        f"Too large for inline ({_human_size(len(resp_body))} > "
+                        f"{_human_size(inline_limit)} limit). "
+                        f"Written to {spill_path} — use read() to inspect."
+                    )
+
+            elif output_mode == "discard" and resp_body:
+                body_disposition = f"Discarded ({_human_size(len(resp_body))}) — use output=\"inline\" to see or output=\"@path\" to save"
+
+            else:
+                body_disposition = "Empty response body"
+
+            # ── detect redirects ─────────────────────────────────────
+            redirect_note = ""
+            final_url = str(fetch_resp.url)
+            if final_url != url:
+                redirect_note = f"Redirected-To: {final_url}\n"
+
+            # ── format response metadata ─────────────────────────────
+            header_lines = []
+            for k, v in resp_headers.items():
+                if k.lower() in ("set-cookie",):
+                    header_lines.append(f"  {k}: (omitted)")
+                    continue
+                display_v = v if len(v) <= 512 else v[:512] + "..."
+                header_lines.append(f"  {k}: {display_v}")
+            headers_block = "\n".join(header_lines) if header_lines else "  (none)"
+
+            await _emit(__event_emitter__, f"HTTP {status_code}", done=True)
+
+            result = (
+                f"HTTP {status_code} {reason}\n"
+                f"{redirect_note}"
+                f"Response-Body: {body_disposition}\n"
+                f"\n"
+                f"Response headers:\n"
+                f"{headers_block}"
+            )
+
+            # Append inline body after metadata if present
+            if inline_body:
+                result += f"\n\n--- response body ---\n{inline_body}"
+
+            return _prepend_warning(result, _sb_warning)
 
         return await _tool_context(__event_emitter__, _run)
