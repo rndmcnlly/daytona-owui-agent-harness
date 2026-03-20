@@ -411,7 +411,7 @@ async def _ensure_sandbox(valves, email: str, client: httpx.AsyncClient, emitter
         resp.raise_for_status()
         if not warning:
             warning = (
-                "[Sandbox was restarted from archived state — installed packages may need reinstalling]"
+                "[Sandbox was restarted from archived state — running processes were lost]"
                 if state == "archived" else
                 "[Sandbox was restarted — running processes were lost]"
             )
@@ -759,7 +759,9 @@ class Tools:
               survives sandbox destruction.
             - The sandbox auto-stops after a configurable idle timeout and
               auto-archives after a further interval. Any tool call transparently
-              restarts it.
+              restarts it. The filesystem (including installed packages and user
+              files) survives both stop and archive — only running processes are
+              lost.
 
             ## Tool catalog
 
