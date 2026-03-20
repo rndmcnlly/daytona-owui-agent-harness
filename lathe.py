@@ -571,16 +571,33 @@ class Tools:
 
     _MANPAGES: dict[str, str] = {
         "fetch": textwrap.dedent("""\
-            # Lathe — fetch() patterns
+            # Lathe — fetch() egress bypass
 
-            fetch() makes HTTP requests from the OWUI server, bypassing
-            sandbox egress restrictions. Uses a @-prefix convention (like
-            curl) to distinguish file paths from inline content:
+            ## When to use fetch() vs bash(curl/wget)
 
-              body="@/home/daytona/workspace/req.json"   — read request body from file
+            **Default: use bash().** The sandbox can reach a broad allowlist
+            of hosts directly — package registries, git hosts, CDNs, AI APIs,
+            cloud storage, and common dev platforms. For these, bash("curl ...")
+            or bash("wget ...") is simpler, faster, supports streaming, and
+            keeps credentials inside the sandbox where env vars work naturally.
+
+            **Use fetch() when:**
+            - A request fails because the sandbox cannot reach the host
+              (egress filtering). fetch() runs the request from the OWUI
+              server, which has unrestricted egress.
+            - You need server-side HTML processing (filter="markdown",
+              "links", or "meta") without installing anything in the sandbox.
+
+            **Do NOT use fetch() just because it exists.** If curl would work,
+            curl is better. fetch() relays through the OWUI server, adding
+            latency, a 100 MB body cap, and no streaming.
+
+            ## Parameter reference
+
+              body="@/home/daytona/workspace/req.json"   — read request body from sandbox file
               body={"query":"test"}                      — send literal JSON as body
 
-              output="@/home/daytona/workspace/resp.json" — write response body to file
+              output="@/home/daytona/workspace/resp.json" — write response body to sandbox file
               output="inline"                             — return body in context
               output="inline:1024"                        — return body truncated to 1024 bytes
               output=""                                   — discard body (default)
@@ -595,54 +612,25 @@ class Tools:
 
               verify_ssl=false   — skip TLS certificate verification (self-signed certs, internal CAs)
 
-            ## Quick API call (inline both ways)
+            ## Patterns
 
+            **Egress bypass — download a blocked artifact:**
             ```
-            fetch(url="https://api.example.com/search",
+            fetch(url="https://blocked-host.example.com/model.tar.gz",
+                  output="@/home/daytona/workspace/model.tar.gz")
+            bash("tar xzf model.tar.gz", workdir="/home/daytona/workspace")
+            ```
+
+            **Egress bypass — API call to a blocked host:**
+            ```
+            fetch(url="https://blocked-api.example.com/search",
                   method="POST",
                   headers={"Content-Type": "application/json"},
                   body={"query": "test"},
                   output="inline")
             ```
-            Response body appears directly in the tool result. No
-            round trips through write()/read().
 
-            ## Save response to file
-
-            ```
-            fetch(url="https://example.com/api/data",
-                  output="@/home/daytona/workspace/data.json")
-            read("/home/daytona/workspace/data.json")
-            ```
-
-            ## POST with a file body
-
-            ```
-            write("/home/daytona/workspace/payload.json", {"big": "data..."})
-            fetch(url="https://api.example.com/upload",
-                  method="POST",
-                  headers={"Content-Type": "application/json"},
-                  body="@/home/daytona/workspace/payload.json",
-                  output="@/home/daytona/workspace/results.json")
-            ```
-
-            ## Download a binary artifact
-
-            ```
-            fetch(url="https://example.com/model.tar.gz",
-                  output="@/home/daytona/workspace/model.tar.gz")
-            bash("tar xzf model.tar.gz", workdir="/home/daytona/workspace")
-            ```
-
-            ## Check availability (HEAD)
-
-            ```
-            fetch(url="https://example.com/file.zip", method="HEAD")
-            ```
-            Returns status + headers without downloading the body.
-
-            ## Crawl documentation
-
+            **Crawl documentation (server-side HTML filtering):**
             ```
             fetch(url="https://docs.example.com/api/reference",
                   filter="markdown",
@@ -651,6 +639,28 @@ class Tools:
             The filter converts HTML to clean markdown server-side —
             no sandbox round-trip needed. Use filter="links" to
             extract a link index, or filter="meta" for page metadata.
+
+            **Save response to file:**
+            ```
+            fetch(url="https://example.com/api/data",
+                  output="@/home/daytona/workspace/data.json")
+            read("/home/daytona/workspace/data.json")
+            ```
+
+            **POST with a file body:**
+            ```
+            write("/home/daytona/workspace/payload.json", {"big": "data..."})
+            fetch(url="https://blocked-api.example.com/upload",
+                  method="POST",
+                  headers={"Content-Type": "application/json"},
+                  body="@/home/daytona/workspace/payload.json",
+                  output="@/home/daytona/workspace/results.json")
+            ```
+
+            **Check availability (HEAD):**
+            ```
+            fetch(url="https://example.com/file.zip", method="HEAD")
+            ```
 
             ## Inline with auto-spill
 
@@ -668,8 +678,8 @@ class Tools:
             bash("echo -n $MY_API_KEY > /tmp/key.txt")
             ```
             Read the key from the sandbox and construct the headers param.
-            Alternatively, if the API is on the egress allowlist, just use
-            bash("curl ...") directly with $MY_API_KEY.
+            If the API host is on the egress allowlist, skip fetch() and just use
+            bash("curl -H \"Authorization: Bearer $MY_API_KEY\" ...") directly.
 
             ## Limitations
 
@@ -682,10 +692,10 @@ class Tools:
               limit is 100 MB (admin-configurable via fetch_max_response_bytes).
             - Inline responses are capped at ~50 KB (admin-configurable via
               fetch_inline_max_bytes). Larger responses auto-spill to a temp file.
-            - fetch() does NOT replace ambient network access. Commands like
-              `pip install` or `git clone` to non-allowlisted hosts still
-              fail. Workaround: fetch() the artifact, then install from the
-              local file.
+            - fetch() does NOT provide ambient network access to the sandbox.
+              Commands like `pip install` or `git clone` to non-allowlisted
+              hosts still fail. Workaround: fetch() the artifact, then
+              install from the local file.
             """),
         "background": textwrap.dedent("""\
             # Lathe — Background Jobs
@@ -752,6 +762,64 @@ class Tools:
             the process is the one you launched (e.g. check CMD/log for expected
             output before killing).
             """),
+        "recipes": textwrap.dedent("""\
+            # Lathe — Recipes
+
+            Tested scripts for bootstrapping common tools from a cold sandbox.
+            These tools live in /tmp and survive sandbox stop/restart but not
+            destroy(). If /tmp/dufs or /tmp/code-server is missing, re-run the
+            install script.
+
+            ## File browser — dufs
+
+            When the user asks to upload files, download files, browse files,
+            or transfer files, the answer is dufs + expose(). Do NOT attempt
+            to relay file contents through the conversation — give the user a
+            URL they can use directly in their browser.
+
+            **Install dufs (run once per sandbox):**
+            ```
+            TAG=$(curl -s https://api.github.com/repos/sigoden/dufs/releases/latest | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
+            curl -sL "https://github.com/sigoden/dufs/releases/download/${TAG}/dufs-${TAG}-x86_64-unknown-linux-musl.tar.gz" \
+              | tar xz -C /tmp && chmod +x /tmp/dufs && /tmp/dufs --version
+            ```
+
+            **Start and expose:**
+            ```
+            nohup /tmp/dufs /home/daytona --port 3000 --allow-all &
+            ```
+            Then call expose(port=3000). Give the user the URL and tell them:
+            - Drag and drop to upload
+            - Click files to download
+            - Navigate folders to browse
+
+            **Serve a specific directory:**
+            ```
+            nohup /tmp/dufs /home/daytona/workspace/output --port 3000 --allow-all &
+            ```
+
+            **Read-only (download only, no upload):**
+            ```
+            nohup /tmp/dufs /home/daytona/workspace --port 3000 &
+            ```
+
+            ## Full IDE — code-server
+
+            When the user asks for an IDE, editor, or VS Code in the browser,
+            use code-server.
+
+            **Install code-server (run once per sandbox):**
+            ```
+            curl -fsSL https://code-server.dev/install.sh | sh -s -- --method=standalone --prefix=/tmp/code-server
+            ```
+
+            **Start and expose:**
+            ```
+            nohup /tmp/code-server/bin/code-server --bind-addr 0.0.0.0:8080 --auth none /home/daytona/workspace &
+            ```
+            Then call expose(port=8080). The user gets VS Code in their browser
+            with full terminal, extensions, and file editing.
+            """),
         "overview": textwrap.dedent("""\
             # Lathe Toolkit — Overview
 
@@ -759,6 +827,9 @@ class Tools:
             you a persistent Linux sandbox backed by a Daytona VM with a
             cross-conversation filesystem. The sandbox is created transparently
             on first tool use and survives across conversations for the same user.
+
+            Read this page fully before your first tool call. It covers the
+            sandbox model, available workflows, and common mistakes.
 
             ## Sandbox model
 
@@ -785,14 +856,11 @@ class Tools:
             The sandbox auto-stops on idle, which kills background processes —
             restart the server and call expose() again if needed.
 
-            **File browser (replacing upload/download):**
-            Instead of dedicated file transfer tools, run a file server in the
-            sandbox (e.g. dufs) and expose it. The user gets drag-and-drop
-            upload/download with no size limit and no OWUI involvement:
-            ```
-            nohup /tmp/dufs /home/daytona --port 3000 --allow-all &
-            ```
-            Then expose(port=3000).
+            **File upload/download/browsing:**
+            When the user wants to upload, download, or browse files, run dufs
+            (a file server) in the sandbox and expose it. The user gets
+            drag-and-drop upload/download in their browser with no size limit.
+            See lathe(manpage="recipes") for install and usage scripts.
 
             **Interactive shell:**
             For interactive work, call expose(ssh=true) to give the user a
@@ -802,6 +870,15 @@ class Tools:
             **Project context:**
             Call onboard() at the start of a conversation to load AGENTS.md and
             discover available skills for the project.
+
+            **Network requests:**
+            Use bash("curl ...") or bash("wget ...") for HTTP requests. The
+            sandbox can reach a broad allowlist of hosts directly (package
+            registries, git hosts, CDNs, AI APIs, etc.), and bash gives you
+            streaming, piping, and natural access to env-var credentials.
+            Only use fetch() when a request fails due to egress filtering —
+            it relays through the OWUI server to bypass sandbox restrictions.
+            See lathe(manpage="fetch") for the full decision rule.
 
             ## Gotchas
 
@@ -838,10 +915,6 @@ class Tools:
               like `pip install` or `git clone` to non-allowlisted hosts still
               fail — use fetch() to download the artifact, then install from
               the local file. See lathe(manpage="fetch") for patterns.
-            - **WebSockets do not work through the Daytona proxy.** The proxy
-              strips the Upgrade header, so Streamlit, Marimo edit mode, socket.io,
-              and similar tools will fail. Use SSE over plain HTTP for agent-to-browser
-              push. FastAPI + SSE is the recommended pattern.
             """),
     }
 
@@ -849,8 +922,10 @@ class Tools:
     # lookups and useful for the model to decide which page to request).
     _MANPAGE_INDEX: dict[str, str] = {
         "overview": "Big-picture orientation: sandbox model, tool catalog, key workflows, gotchas.",
+        "recipes": "Bootstrap scripts for common tools: dufs (file browser), code-server (IDE).",
         "background": "Background job sidecar files, and peek/poll/kill recipes.",
-        "fetch": "Egress bypass patterns: GET/POST, downloads, crawling docs, API auth.",
+        "fetch": "When to use fetch() vs bash(curl), egress bypass patterns, HTML filtering, API auth.",
+        "version": "Show the installed Lathe toolkit version.",
     }
 
     async def lathe(
@@ -860,10 +935,19 @@ class Tools:
         __event_emitter__=None,
     ) -> str:
         """
-        Manual for the lathe toolkit: bash, read, write, edit, onboard, expose, fetch, destroy. Default manpage: overview.
-        :param manpage: Which manual page to return. Use "overview" for big-picture orientation.
+        Manual for the lathe toolkit. Call lathe(manpage="overview") before your first tool use in a new conversation to learn the sandbox model, available workflows, and gotchas. Costs one tool call, saves many.
+        :param manpage: Which manual page to return. Use "overview" for big-picture orientation, "version" for the installed version.
         """
         tool_catalog = _build_tool_catalog(self)
+
+        if manpage == "version":
+            # Extract version from the module docstring (single source of truth).
+            import re as _re
+            mod_doc = globals().get("__doc__", "") or ""
+            match = _re.search(r"^version:\s*(.+)$", mod_doc, _re.MULTILINE)
+            ver = match.group(1).strip() if match else "unknown"
+            await _emit(__event_emitter__, f"Lathe v{ver}", done=True)
+            return f"Lathe toolkit version: {ver}"
 
         if manpage in self._MANPAGES:
             content = self._MANPAGES[manpage].format(tool_catalog=tool_catalog)
@@ -1089,7 +1173,7 @@ class Tools:
         Commands that finish within the foreground window return output directly.
         Long-running commands auto-background and return a descriptor with log
         file paths for monitoring.
-        See lathe(manpage="overview") for sandbox model, workflows, and gotchas.
+        If you have not read the manual yet, call lathe(manpage="overview") first.
         :param command: The bash command to execute.
         :param workdir: Working directory (default: /home/daytona/workspace).
         :param foreground_seconds: Seconds to wait before auto-backgrounding (default: per admin setting, usually 30). Use higher values when waiting for a known-slow command to finish.
@@ -1502,8 +1586,8 @@ class Tools:
         """
         Expose a sandbox service to the user. Use port= for web servers,
         ssh=true for interactive shell access.
-        Common patterns: run dufs for file upload/download, code-server for
-        a full IDE, or any web app. See lathe(manpage="overview") for recipes.
+        Common patterns: dufs for file upload/download, code-server for a full
+        IDE, or any web app. See lathe(manpage="recipes") for install scripts.
         :param port: Port the service listens on (3000–9999). Returns a public HTTPS URL valid ~1 hour.
         :param ssh: If true, returns a time-limited SSH command (ignores port).
         """
@@ -1586,9 +1670,12 @@ class Tools:
         __event_emitter__=None,
     ) -> str:
         """
-        Fetch a URL via the server, bypassing sandbox egress restrictions.
-        Uses @-prefix convention (like curl) for file paths vs. inline content.
-        See lathe(manpage="fetch") for patterns.
+        Egress bypass: fetch a URL from the OWUI server when the sandbox cannot reach the host directly.
+        For hosts the sandbox CAN reach (allowlisted package registries, git hosts, CDNs, AI APIs, etc.),
+        prefer bash("curl ...") or bash("wget ...") instead — they are faster, support streaming, and
+        keep credentials in the sandbox. Use fetch() only when a request fails due to egress filtering,
+        or when you need server-side HTML filtering (filter="markdown"|"links"|"meta").
+        See lathe(manpage="fetch") for when-to-use guidance and patterns.
         :param url: The URL to fetch (http or https).
         :param method: HTTP method: GET, POST, PUT, DELETE, PATCH, HEAD (default: GET).
         :param headers: JSON object of extra request headers, e.g. {"Accept": "text/html"}.

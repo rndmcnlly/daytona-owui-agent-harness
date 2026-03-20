@@ -59,10 +59,22 @@ Example: all file-path parameters (`read`, `write`, `edit`, fetch `body=@...` / 
 
 When adding new tool parameters or options, apply the same lens: can a plausible misuse silently produce wrong results? If so, add validation that rejects it with a clear error.
 
+## Cold-start bootstrap
+
+The Lathe-using agent (the model operating the tools at runtime, not the agent maintaining this repo) must be able to bootstrap a fully functional environment from a blank Daytona sandbox — e.g. immediately after `destroy()`. No tool or utility should be assumed pre-installed beyond what the base Daytona image provides.
+
+The `lathe(manpage="recipes")` manpage is the authoritative source for tested bootstrap scripts. When adding a new recipe, keep these constraints in mind:
+
+- **Egress filtering.** The sandbox can only reach an allowlisted set of hosts. GitHub API (`api.github.com`) and GitHub release downloads (`github.com`, `objects.githubusercontent.com`) are reachable, as are major package registries and CDNs. Scripts that depend on non-allowlisted hosts will silently fail — always verify the download path works from inside the sandbox.
+- **No hardcoded versions in download URLs.** GitHub release asset filenames contain the version tag. Use the GitHub API to resolve the latest tag dynamically, then construct the URL. A hardcoded URL rots the moment upstream ships a new release.
+- **Install to /tmp.** Binaries in `/tmp` survive sandbox stop/restart but not `destroy()`. This is the right tradeoff — the recipes page tells the model to re-run the install script if the binary is missing.
+- **Architecture.** Daytona sandboxes are x86_64 Linux. Use `x86_64-unknown-linux-musl` (static) builds where available.
+
 ## Architecture notes
 
 - **Single file** — everything lives in `lathe.py`. Resist splitting it.
 - **`_tool_context(emitter, fn)`** — the execution wrapper for all public tool methods except `destroy`. It opens a shared `httpx.AsyncClient`, calls `fn(client)`, and catches standard exceptions. Each tool defines `async def _run(client)` and passes it to `_tool_context`.
 - **`destroy`** — intentional exception to the above: it manages its own client and error handling because it is destructive and does not use `_ensure_sandbox`.
 - **`_ensure_sandbox(valves, email, client, emitter)`** — called at the top of every `_run(client)`. Transparent to the model; handles create/start/recover/poll.
-- **Offload invariant** — binary and media files are always offloaded to OWUI storage via `_upload_to_owui_storage`. If that fails, the tool raises loudly. There is no silent inline fallback.
+- **No OWUI storage dependency.** Lathe previously had an `attach()` tool that embedded rich media (images, download cards, syntax-highlighted previews) directly in chat via OWUI's file storage. It was cut because it coupled Lathe to OWUI's storage subsystems, bloated the chat database, and invited relentless scope creep (filetype sniffing, inline rendering, download cards). The replacement is `expose()`: binary outputs go to the sandbox filesystem, dufs or a custom server makes them accessible, and the user gets a URL. This keeps Lathe independent of OWUI internals. Do not re-introduce OWUI storage integration without a clear principle for halting scope creep.
+
