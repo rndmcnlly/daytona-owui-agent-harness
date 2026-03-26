@@ -11,7 +11,7 @@ assignees: ''
 **Open WebUI version**:
 
 **Which tool triggered the issue?**
-<!-- e.g. bash, read, write, edit, expose, fetch, onboard, destroy -->
+<!-- e.g. bash, read, write, edit, expose, onboard, destroy -->
 
 **What the model was asked to do:**
 

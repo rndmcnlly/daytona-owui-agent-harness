@@ -1,15 +1,12 @@
 # Lathe
 
-A single-file Open WebUI toolkit that gives any model a coding agent's tool surface — `bash`, `read`, `write`, `edit`, `onboard`, `expose`, `fetch`, `destroy` — executing against per-user cloud sandboxes via [Daytona](https://www.daytona.io/).
+A single-file Open WebUI toolkit that gives any model a coding agent's tool surface — `bash`, `read`, `write`, `edit`, `onboard`, `expose`, `destroy` — executing against per-user cloud sandboxes via [Daytona](https://www.daytona.io/).
 
 **For users**: See [lathe.tools](https://lathe.tools) for what Lathe can do, how to use it, and example workflows.
 
 ## What it does to your instance
 
-Lathe registers nine tools that models can call in [Native function calling mode](https://docs.openwebui.com/features/extensibility/plugin/tools/). When a user's model calls a tool:
-
-1. **Outbound API calls to Daytona** — Lathe creates, starts, or resumes a cloud sandbox VM via the Daytona control plane and toolbox APIs. All sandbox operations go outbound from your OWUI server.
-2. **Outbound HTTP from `fetch`** — The `fetch` tool makes HTTP requests from the OWUI server on the model's behalf, bypassing sandbox egress restrictions. Request/response bodies are transferred as sandbox files; only HTTP metadata enters the conversation.
+Lathe registers eight tools that models can call in [Native function calling mode](https://docs.openwebui.com/features/extensibility/plugin/tools/). When a user's model calls a tool, Lathe creates, starts, or resumes a cloud sandbox VM via the Daytona control plane and toolbox APIs. All sandbox operations go outbound from your OWUI server.
 
 No OWUI internals are touched. The toolkit does not import `open_webui.*`, does not use OWUI file storage, and does not modify models, prompts, users, or other configuration. Its only runtime dependency is `httpx`.
 
@@ -76,7 +73,6 @@ To update an existing installation, use the `/api/v1/tools/id/lathe/update` endp
 | `write(path, content)` | Write/create file (auto-creates parent dirs) |
 | `edit(path, old_string, new_string, replace_all)` | Exact string replacement |
 | `expose(port, ssh)` | Give the user a public HTTPS URL for a sandbox service, or a time-limited SSH command |
-| `fetch(url, method, headers, body, output)` | Make HTTP requests from the OWUI server, bypassing sandbox egress restrictions |
 | `destroy(confirm)` | Permanently delete the sandbox (requires `confirm=true`) |
 
 ## Testing

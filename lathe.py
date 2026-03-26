@@ -2,9 +2,9 @@
 title: Lathe
 author: Adam Smith
 author_url: https://adamsmith.as
-description: Coding agent tools (lathe, bash, read, write, edit, onboard, expose, fetch, destroy) backed by per-user sandbox VMs with transparent lifecycle management.
+description: Coding agent tools (lathe, bash, read, write, edit, onboard, expose, destroy) backed by per-user sandbox VMs with transparent lifecycle management.
 required_open_webui_version: 0.4.0
-requirements: httpx, beautifulsoup4, markdownify
+requirements: httpx
 version: 0.10.0
 licence: MIT
 """
@@ -518,18 +518,7 @@ class Tools:
             30,
             description="Seconds to wait for a bash command before auto-backgrounding it (1-300)",
         )
-        fetch_max_response_bytes: int = Field(
-            100 * 1024 * 1024,
-            description="Maximum response body size for fetch() in bytes (default: 100 MB)",
-        )
-        fetch_timeout_seconds: int = Field(
-            120,
-            description="HTTP timeout for fetch() requests in seconds (default: 120)",
-        )
-        fetch_inline_max_bytes: int = Field(
-            50 * 1024,
-            description="Maximum response body size for inline fetch() output in bytes (default: 50 KB). Larger responses auto-spill to a temp file.",
-        )
+
 
     class UserValves(BaseModel):
         env_vars: str = Field(
@@ -578,132 +567,59 @@ class Tools:
     # rather than calling .format() on every page — otherwise any page
     # with literal braces will blow up with a KeyError at runtime.
     _MANPAGES: dict[str, str] = {
-        "fetch": textwrap.dedent("""\
-            # Lathe — fetch() egress bypass
+        "egress": textwrap.dedent("""\
+            # Lathe — Egress Restrictions
 
-            ## When to use fetch() vs bash(curl/wget)
+            ## What can the sandbox reach?
 
-            **Default: use bash().** The sandbox can reach a broad allowlist
-            of hosts directly — package registries, git hosts, CDNs, AI APIs,
-            cloud storage, and common dev platforms. For these, bash("curl ...")
-            or bash("wget ...") is simpler, faster, supports streaming, and
-            keeps credentials inside the sandbox where env vars work naturally.
+            The sandbox can directly reach a broad allowlist of hosts:
+            package registries (PyPI, npm, apt), git hosts (GitHub, GitLab,
+            Bitbucket), container registries (Docker Hub, ghcr.io), AI APIs
+            (OpenAI, Anthropic, OpenRouter, Groq, etc.), CDNs (Cloudflare,
+            jsDelivr, unpkg), select cloud storage (S3, GCS), and common
+            dev platforms (Vercel, Supabase, Sentry).
 
-            **Use fetch() when:**
-            - A request fails because the sandbox cannot reach the host
-              (egress filtering). fetch() runs the request from the OWUI
-              server, which has unrestricted egress.
-            - You need server-side HTML processing (filter="markdown",
-              "links", or "meta") without installing anything in the sandbox.
+            bash("curl ...") and bash("wget ...") work for all allowlisted
+            hosts. Most tasks never hit the limit.
 
-            **Do NOT use fetch() just because it exists.** If curl would work,
-            curl is better. fetch() relays through the OWUI server, adding
-            latency, a 100 MB body cap, and no streaming.
+            ## When curl fails: egress workarounds
 
-            ## Parameter reference
+            If a request fails because the sandbox cannot reach a host
+            (connection timeout, connection refused on a host you know is
+            up), the host is not on the egress allowlist. There is no clean
+            way for the agent to independently bypass this — the
+            workarounds involve the user.
 
-              body="@/home/daytona/workspace/req.json"   — read request body from sandbox file
-              body={"query":"test"}                      — send literal JSON as body
+            **Common — user downloads and uploads via dufs:**
+            Ask the user to download the file on their own machine, then
+            upload it to the sandbox through the dufs file browser. See
+            lathe(manpage="recipes") for dufs setup. This handles any file
+            type and any host with no size constraints.
 
-              output="@/home/daytona/workspace/resp.json" — write response body to sandbox file
-              output="inline"                             — return body in context
-              output="inline:1024"                        — return body truncated to 1024 bytes
-              output=""                                   — discard body (default)
+            **Rare — custom browser-side fetch service:**
+            For repeated fetch needs (e.g. crawling an API the sandbox
+            can't reach), build a small web service in the sandbox that
+            presents a UI where the user clicks to initiate fetches from
+            their browser. The browser has unrestricted egress but is
+            subject to CORS — this only works automatically for targets
+            that set Access-Control-Allow-Origin headers. The service
+            POSTs results back to itself for the agent to read.
 
-              include_response_headers="important"  — content-type, content-length, location, rate-limit (default)
-              include_response_headers="all"        — every response header
-              include_response_headers="none"       — suppress response headers entirely
+            **Clean solution — Daytona Tier 3:**
+            Daytona Tier 3 accounts have unrestricted egress. If the
+            admin's Daytona account is Tier 3, none of these workarounds
+            are needed — bash("curl ...") reaches any host. The admin can
+            check their tier at https://app.daytona.io.
 
-              filter="markdown"  — convert HTML to markdown (strips scripts/styles)
-              filter="links"     — extract all links as text + href pairs
-              filter="meta"      — extract title, description, og/twitter tags
+            ## What does NOT work
 
-              verify_ssl=false   — skip TLS certificate verification (self-signed certs, internal CAs)
-
-            ## Patterns
-
-            **Egress bypass — download a blocked artifact:**
-            ```
-            fetch(url="https://blocked-host.example.com/model.tar.gz",
-                  output="@/home/daytona/workspace/model.tar.gz")
-            bash("tar xzf model.tar.gz", workdir="/home/daytona/workspace")
-            ```
-
-            **Egress bypass — API call to a blocked host:**
-            ```
-            fetch(url="https://blocked-api.example.com/search",
-                  method="POST",
-                  headers={"Content-Type": "application/json"},
-                  body={"query": "test"},
-                  output="inline")
-            ```
-
-            **Crawl documentation (server-side HTML filtering):**
-            ```
-            fetch(url="https://docs.example.com/api/reference",
-                  filter="markdown",
-                  output="inline")
-            ```
-            The filter converts HTML to clean markdown server-side —
-            no sandbox round-trip needed. Use filter="links" to
-            extract a link index, or filter="meta" for page metadata.
-
-            **Save response to file:**
-            ```
-            fetch(url="https://example.com/api/data",
-                  output="@/home/daytona/workspace/data.json")
-            read("/home/daytona/workspace/data.json")
-            ```
-
-            **POST with a file body:**
-            ```
-            write("/home/daytona/workspace/payload.json", {"big": "data..."})
-            fetch(url="https://blocked-api.example.com/upload",
-                  method="POST",
-                  headers={"Content-Type": "application/json"},
-                  body="@/home/daytona/workspace/payload.json",
-                  output="@/home/daytona/workspace/results.json")
-            ```
-
-            **Check availability (HEAD):**
-            ```
-            fetch(url="https://example.com/file.zip", method="HEAD")
-            ```
-
-            ## Inline with auto-spill
-
-            If output="inline" but the response exceeds the inline size
-            limit (~50 KB default), the body is automatically written to a
-            temp file and the tool result tells you where. Use read() to
-            inspect specific sections.
-
-            ## Working with APIs that require auth
-
-            The model cannot see UserValves secrets directly. To use a
-            secret as a request header, the user must set it in UserValves
-            env_vars, then:
-            ```
-            bash("echo -n $MY_API_KEY > /tmp/key.txt")
-            ```
-            Read the key from the sandbox and construct the headers param.
-            If the API host is on the egress allowlist, skip fetch() and just use
-            bash("curl -H \"Authorization: Bearer $MY_API_KEY\" ...") directly.
-
-            ## Limitations
-
-            - One request per call. No connection pooling or cookie jars
-              across calls.
-            - Redirects are followed automatically (up to 20 hops). The
-              metadata shows the final URL if it differs from the requested
-              one.
-            - Response body must fit in server memory during relay. Default
-              limit is 100 MB (admin-configurable via fetch_max_response_bytes).
-            - Inline responses are capped at ~50 KB (admin-configurable via
-              fetch_inline_max_bytes). Larger responses auto-spill to a temp file.
-            - fetch() does NOT provide ambient network access to the sandbox.
-              Commands like `pip install` or `git clone` to non-allowlisted
-              hosts still fail. Workaround: fetch() the artifact, then
-              install from the local file.
+            - pip install / git clone / npm install to non-allowlisted
+              hosts fail even with dufs. Download the artifact first, then
+              install from the local file (e.g. pip install ./package.whl).
+            - The browser's fetch() API is subject to CORS. A custom fetch
+              service cannot silently proxy arbitrary URLs — only
+              CORS-friendly ones auto-complete; others require the user to
+              download and upload manually.
             """),
         "background": textwrap.dedent("""\
             # Lathe — Background Jobs
@@ -884,9 +800,8 @@ class Tools:
             sandbox can reach a broad allowlist of hosts directly (package
             registries, git hosts, CDNs, AI APIs, etc.), and bash gives you
             streaming, piping, and natural access to env-var credentials.
-            Only use fetch() when a request fails due to egress filtering —
-            it relays through the OWUI server to bypass sandbox restrictions.
-            See lathe(manpage="fetch") for the full decision rule.
+            If a request fails due to egress filtering, see
+            lathe(manpage="egress") for workarounds.
 
             ## Gotchas
 
@@ -908,21 +823,12 @@ class Tools:
             - expose() URLs expire after ~1 hour. The sandbox itself stops on
               idle (~15 min default), killing servers.
             - destroy() is irreversible. The volume is preserved.
-            - **Network egress is restricted.** The sandbox can only reach a
-              curated allowlist of hosts: package registries (PyPI, npm, apt),
-              git hosts (GitHub, GitLab, Bitbucket), container registries
-              (Docker Hub, ghcr.io), AI APIs (OpenAI, Anthropic, OpenRouter,
-              Groq, etc.), CDNs (Cloudflare, jsDelivr, unpkg), select cloud
-              storage (S3, GCS), and common dev platforms (Vercel, Supabase,
-              Sentry). Requests to other hosts will silently fail or time out.
-              Use fetch() to retrieve URLs the sandbox cannot reach directly —
-              the request is made from the server, bypassing egress restrictions.
-              Request and response bodies are read/written as sandbox files;
-              only HTTP metadata enters the conversation. Note: fetch() is
-              single-shot and does not provide ambient proxy access, so commands
-              like `pip install` or `git clone` to non-allowlisted hosts still
-              fail — use fetch() to download the artifact, then install from
-              the local file. See lathe(manpage="fetch") for patterns.
+            - **Network egress may be restricted.** Depending on the admin's
+              Daytona tier, the sandbox may only reach a curated allowlist of
+              hosts (package registries, git hosts, CDNs, AI APIs, etc.).
+              Requests to non-allowlisted hosts silently fail or time out.
+              If curl fails on a host you know is up, see
+              lathe(manpage="egress") for workarounds.
             """),
     }
 
@@ -932,7 +838,7 @@ class Tools:
         "overview": "Big-picture orientation: sandbox model, tool catalog, key workflows, gotchas.",
         "recipes": "Bootstrap scripts for common tools: dufs (file browser), code-server (IDE).",
         "background": "Background job sidecar files, and peek/poll/kill recipes.",
-        "fetch": "When to use fetch() vs bash(curl), egress bypass patterns, HTML filtering, API auth.",
+        "egress": "Egress restrictions, workarounds (dufs upload, browser-side fetch), Tier 3.",
         "version": "Show the installed Lathe toolkit version.",
     }
 
@@ -1663,336 +1569,5 @@ class Tools:
                 f"the URL stopped working, restart the server and call expose() again.",
                 _sb_warning,
             )
-
-        return await _tool_context(__event_emitter__, _run)
-
-    async def fetch(
-        self,
-        url: str,
-        method: str = "GET",
-        headers: str = "{}",
-        body: str = "",
-        output: str = "",
-        filter: str = "",
-        include_response_headers: str = "important",
-        verify_ssl: bool = True,
-        __user__: dict = {},
-        __event_emitter__=None,
-    ) -> str:
-        """
-        Egress bypass: fetch a URL from the OWUI server when the sandbox cannot reach the host directly.
-        For hosts the sandbox CAN reach (allowlisted package registries, git hosts, CDNs, AI APIs, etc.),
-        prefer bash("curl ...") or bash("wget ...") instead — they are faster, support streaming, and
-        keep credentials in the sandbox. Use fetch() only when a request fails due to egress filtering,
-        or when you need server-side HTML filtering (filter="markdown"|"links"|"meta").
-        See lathe(manpage="fetch") for when-to-use guidance and patterns.
-        :param url: The URL to fetch (http or https).
-        :param method: HTTP method: GET, POST, PUT, DELETE, PATCH, HEAD (default: GET).
-        :param headers: JSON object of extra request headers, e.g. {"Accept": "text/html"}.
-        :param body: Request body. "@/absolute/path" reads from sandbox file; bare string is sent literally. Empty = no body.
-        :param output: Response body handling. "@/absolute/path" writes to sandbox file; "inline" returns body in context; "inline:N" truncates to N bytes; empty = discard (metadata only).
-        :param filter: Post-process HTML responses: "markdown" (convert to markdown), "links" (extract all links), "meta" (title + description + og tags). Empty = no filtering.
-        :param include_response_headers: How many response headers to show: "none", "important" (default — content-type, content-length, location, etc.), or "all".
-        :param verify_ssl: Verify TLS certificates. Set false for self-signed certs (default: true).
-        """
-        async def _run(client):
-            email = _get_email(__user__)
-            sandbox_id, _sb_warning = await _ensure_sandbox(self.valves, email, client, __event_emitter__)
-
-            # ── validate inputs ──────────────────────────────────────
-            allowed_methods = ("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD")
-            norm_method = method.strip().upper()
-            if norm_method not in allowed_methods:
-                return f"Error: method must be one of {', '.join(allowed_methods)}. Got: {method}"
-
-            if not url or not (url.startswith("http://") or url.startswith("https://")):
-                return "Error: url must start with http:// or https://"
-
-            try:
-                req_headers = json.loads(headers) if headers.strip() else {}
-                if not isinstance(req_headers, dict):
-                    return "Error: headers must be a JSON object, e.g. {\"Accept\": \"text/html\"}"
-            except (json.JSONDecodeError, ValueError) as exc:
-                return f"Error: headers is not valid JSON: {exc}"
-
-            # ── resolve request body ─────────────────────────────────
-            req_body: bytes | None = None
-            if body:
-                if body.startswith("@"):
-                    # Read from sandbox file
-                    body_path = body[1:]
-                    err = _require_abs_path(body_path, "body (after @)")
-                    if err:
-                        return err
-                    await _emit(__event_emitter__, f"Reading request body from {body_path}...")
-                    resp = await client.get(
-                        _toolbox(self.valves, sandbox_id, "/files/download"),
-                        params={"path": body_path},
-                        headers=_headers(self.valves),
-                        timeout=60.0,
-                    )
-                    if resp.status_code == 404:
-                        return f"Error: body file not found: {body_path}"
-                    resp.raise_for_status()
-                    req_body = resp.content
-                else:
-                    # Literal inline body
-                    req_body = body.encode("utf-8")
-
-            # ── resolve output mode ──────────────────────────────────
-            output_mode = "discard"  # "discard" | "file" | "inline"
-            output_path = ""
-            inline_caller_limit = 0  # 0 = no caller override
-            if output:
-                out_stripped = output.strip().lower()
-                if output.startswith("@"):
-                    output_mode = "file"
-                    output_path = output[1:]
-                    err = _require_abs_path(output_path, "output (after @)")
-                    if err:
-                        return err
-                elif out_stripped == "inline" or out_stripped.startswith("inline:"):
-                    output_mode = "inline"
-                    if ":" in out_stripped:
-                        try:
-                            inline_caller_limit = int(out_stripped.split(":", 1)[1])
-                            if inline_caller_limit <= 0:
-                                return "Error: inline byte limit must be a positive integer, e.g. output=\"inline:1024\""
-                        except ValueError:
-                            return "Error: invalid inline limit — use output=\"inline:1024\" (bytes)"
-                else:
-                    return (
-                        f"Error: unrecognized output mode \"{output}\". "
-                        f"Use \"@/absolute/path\" to write to file, "
-                        f"\"inline\" or \"inline:N\" to return body in context, "
-                        f"or omit for metadata only."
-                    )
-
-            # ── make the HTTP request from a dedicated client ────────
-            # Separate from the Daytona API client: different trust
-            # boundary, different timeout, optional TLS bypass.
-            await _emit(__event_emitter__, f"{norm_method} {url}...")
-
-            max_bytes = self.valves.fetch_max_response_bytes
-            timeout_s = float(max(1, self.valves.fetch_timeout_seconds))
-
-            try:
-                async with httpx.AsyncClient(verify=verify_ssl) as fetch_client:
-                    fetch_resp = await fetch_client.request(
-                        norm_method,
-                        url,
-                        headers=req_headers,
-                        content=req_body,
-                        timeout=timeout_s,
-                        follow_redirects=True,
-                    )
-            except httpx.TimeoutException:
-                await _emit(__event_emitter__, "Request timed out", done=True)
-                return f"Error: Request timed out after {int(timeout_s)}s"
-            except httpx.RequestError as exc:
-                await _emit(__event_emitter__, "Request failed", done=True)
-                return f"Error: Request failed: {exc}"
-
-            status_code = fetch_resp.status_code
-            reason = fetch_resp.reason_phrase or ""
-            resp_headers = dict(fetch_resp.headers)
-            resp_body = fetch_resp.content
-
-            # ── enforce size limit ───────────────────────────────────
-            if len(resp_body) > max_bytes:
-                await _emit(__event_emitter__, "Response too large", done=True)
-                return (
-                    f"Error: Response body is {_human_size(len(resp_body))}, "
-                    f"exceeding the {_human_size(max_bytes)} limit. "
-                    f"Ask an admin to increase fetch_max_response_bytes if needed."
-                )
-
-            # ── apply filter (HTML post-processing) ───────────────────
-            filter_warning = ""
-            filter_mode = filter.strip().lower() if filter else ""
-            if filter_mode:
-                if filter_mode not in ("markdown", "links", "meta"):
-                    return f"Error: filter must be \"markdown\", \"links\", or \"meta\". Got: {filter}"
-
-                content_type = resp_headers.get("content-type", "")
-                is_html = "html" in content_type or "xhtml" in content_type
-                if not is_html and resp_body:
-                    filter_warning = (
-                        f"Warning: filter=\"{filter_mode}\" is intended for HTML, "
-                        f"but response content-type is \"{content_type}\". "
-                        f"Applying anyway.\n"
-                    )
-
-                if resp_body:
-                    try:
-                        from bs4 import BeautifulSoup
-                        html_text = resp_body.decode("utf-8", errors="replace")
-                        soup = BeautifulSoup(html_text, "html.parser")
-                        filtered = ""
-
-                        if filter_mode == "markdown":
-                            from markdownify import markdownify as md
-                            # Remove script/style noise before converting
-                            for tag in soup(["script", "style", "noscript"]):
-                                tag.decompose()
-                            filtered = md(str(soup), heading_style="ATX", strip=["img"])
-                            # Collapse excessive blank lines
-                            import re
-                            filtered = re.sub(r"\n{3,}", "\n\n", filtered).strip()
-
-                        elif filter_mode == "links":
-                            links = []
-                            for a in soup.find_all("a", href=True):
-                                href = a["href"]
-                                text = a.get_text(strip=True)
-                                if text:
-                                    links.append(f"  {text} — {href}")
-                                else:
-                                    links.append(f"  {href}")
-                            filtered = f"{len(links)} links found:\n" + "\n".join(links) if links else "No links found."
-
-                        elif filter_mode == "meta":
-                            parts = []
-                            title_tag = soup.find("title")
-                            if title_tag:
-                                parts.append(f"Title: {title_tag.get_text(strip=True)}")
-                            for meta in soup.find_all("meta"):
-                                name = meta.get("name", meta.get("property", "")).lower()
-                                content = meta.get("content", "")
-                                if name in ("description", "og:title", "og:description",
-                                            "og:image", "og:url", "og:type", "og:site_name",
-                                            "twitter:title", "twitter:description",
-                                            "twitter:image", "twitter:card"):
-                                    parts.append(f"{name}: {content}")
-                            filtered = "\n".join(parts) if parts else "No metadata found."
-
-                        resp_body = filtered.encode("utf-8")
-                    except Exception as exc:
-                        filter_warning += f"Warning: filter=\"{filter_mode}\" failed: {exc}. Returning unfiltered body.\n"
-
-            # ── handle response body disposition ─────────────────────
-            body_disposition = ""
-            inline_body = ""
-
-            if norm_method == "HEAD":
-                body_disposition = "No body (HEAD request)"
-
-            elif output_mode == "file" and resp_body:
-                await _emit(__event_emitter__, f"Writing response to {output_path}...")
-                parent = "/".join(output_path.rstrip("/").split("/")[:-1])
-                if parent:
-                    await client.post(
-                        _toolbox(self.valves, sandbox_id, "/files/folder"),
-                        headers=_headers(self.valves),
-                        json={"path": parent, "mode": "755"},
-                        timeout=30.0,
-                    )
-                upload_resp = await client.post(
-                    _toolbox(self.valves, sandbox_id, "/files/upload"),
-                    params={"path": output_path},
-                    headers={"Authorization": f"Bearer {self.valves.daytona_api_key}"},
-                    files={"file": ("file", io.BytesIO(resp_body), "application/octet-stream")},
-                    timeout=120.0,
-                )
-                upload_resp.raise_for_status()
-                body_disposition = f"Written to {output_path} ({_human_size(len(resp_body))})"
-
-            elif output_mode == "inline" and resp_body:
-                system_limit = self.valves.fetch_inline_max_bytes
-                effective_limit = min(inline_caller_limit, system_limit) if inline_caller_limit else system_limit
-
-                if len(resp_body) <= effective_limit:
-                    # Small enough to return directly
-                    try:
-                        inline_body = resp_body.decode("utf-8")
-                    except UnicodeDecodeError:
-                        inline_body = resp_body.decode("latin-1")
-                    body_disposition = f"Inline ({_human_size(len(resp_body))})"
-                elif inline_caller_limit and len(resp_body) <= system_limit:
-                    # Fits in system limit but exceeds caller limit — truncate
-                    truncated = resp_body[:effective_limit]
-                    try:
-                        inline_body = truncated.decode("utf-8", errors="replace")
-                    except UnicodeDecodeError:
-                        inline_body = truncated.decode("latin-1")
-                    body_disposition = (
-                        f"Inline, truncated ({_human_size(effective_limit)} of "
-                        f"{_human_size(len(resp_body))} shown)"
-                    )
-                else:
-                    # Too large for inline — auto-spill to temp file
-                    spill_path = f"/tmp/fetch_{uuid.uuid4().hex[:12]}"
-                    await _emit(__event_emitter__, f"Response too large for inline ({_human_size(len(resp_body))}), spilling to {spill_path}...")
-                    upload_resp = await client.post(
-                        _toolbox(self.valves, sandbox_id, "/files/upload"),
-                        params={"path": spill_path},
-                        headers={"Authorization": f"Bearer {self.valves.daytona_api_key}"},
-                        files={"file": ("file", io.BytesIO(resp_body), "application/octet-stream")},
-                        timeout=120.0,
-                    )
-                    upload_resp.raise_for_status()
-                    body_disposition = (
-                        f"Too large for inline ({_human_size(len(resp_body))} > "
-                        f"{_human_size(system_limit)} limit). "
-                        f"Written to {spill_path} — use read() to inspect."
-                    )
-
-            elif output_mode == "discard" and resp_body:
-                body_disposition = f"Discarded ({_human_size(len(resp_body))}) — use output=\"inline\" to see or output=\"@path\" to save"
-
-            else:
-                body_disposition = "Empty response body"
-
-            # ── detect redirects ─────────────────────────────────────
-            redirect_note = ""
-            final_url = str(fetch_resp.url)
-            if final_url != url:
-                redirect_note = f"Redirected-To: {final_url}\n"
-
-            # ── format response metadata ─────────────────────────────
-            rh_mode = include_response_headers.strip().lower() if include_response_headers else "important"
-            if rh_mode not in ("none", "important", "all"):
-                rh_mode = "important"
-
-            IMPORTANT_HEADERS = {
-                "content-type", "content-length", "content-disposition",
-                "content-encoding", "location", "retry-after",
-                "www-authenticate", "x-ratelimit-remaining",
-                "x-ratelimit-limit", "x-ratelimit-reset",
-            }
-
-            headers_block = ""
-            if rh_mode != "none":
-                header_lines = []
-                for k, v in resp_headers.items():
-                    kl = k.lower()
-                    if kl in ("set-cookie",):
-                        if rh_mode == "all":
-                            header_lines.append(f"  {k}: (omitted)")
-                        continue
-                    if rh_mode == "important" and kl not in IMPORTANT_HEADERS:
-                        continue
-                    display_v = v if len(v) <= 512 else v[:512] + "..."
-                    header_lines.append(f"  {k}: {display_v}")
-                if header_lines:
-                    headers_block = "\nResponse headers:\n" + "\n".join(header_lines)
-
-            await _emit(__event_emitter__, f"HTTP {status_code}", done=True)
-
-            result = (
-                f"HTTP {status_code} {reason}\n"
-                f"{redirect_note}"
-                f"Response-Body: {body_disposition}"
-                f"{headers_block}"
-            )
-
-            # Append inline body after metadata if present
-            if inline_body:
-                result += f"\n\n--- response body ---\n{inline_body}"
-
-            if filter_warning:
-                result = filter_warning + result
-
-            return _prepend_warning(result, _sb_warning)
 
         return await _tool_context(__event_emitter__, _run)

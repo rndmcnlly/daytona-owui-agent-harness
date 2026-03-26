@@ -55,7 +55,7 @@ The unit tests catch regressions in pure-Python helpers but cannot catch broken 
 
 **Poka-yoke over convenience.** The model operating the tools is the primary interface consumer, not a human typing at a REPL. Every tool call should re-assert correct knowledge of the system rather than silently accommodating ambiguity. Prefer designs that make the wrong thing impossible over designs that make the right thing easy.
 
-Example: all file-path parameters (`read`, `write`, `edit`, fetch `body=@...` / `output=@...`) require absolute paths. The Daytona toolbox API resolves relative paths against `/home/daytona`, but bash's default cwd is `/home/daytona/workspace` — so a relative path like `workspace/file.txt` means different things depending on which tool processes it. Requiring absolute paths eliminates the class of bug entirely. A model that doesn't know where its files are should fail loudly, not succeed quietly in the wrong place.
+Example: all file-path parameters (`read`, `write`, `edit`) require absolute paths. The Daytona toolbox API resolves relative paths against `/home/daytona`, but bash's default cwd is `/home/daytona/workspace` — so a relative path like `workspace/file.txt` means different things depending on which tool processes it. Requiring absolute paths eliminates the class of bug entirely. A model that doesn't know where its files are should fail loudly, not succeed quietly in the wrong place.
 
 When adding new tool parameters or options, apply the same lens: can a plausible misuse silently produce wrong results? If so, add validation that rejects it with a clear error.
 
