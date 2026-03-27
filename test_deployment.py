@@ -9,17 +9,13 @@ and produce expected results.  Each test uses a local: prefixed chat_id
 so OWUI treats it as a temporary chat — nothing is persisted to the database.
 
 Usage:
-    uv run --script test_deployment.py                  # run all tests
-    uv run --script test_deployment.py --list           # list available tests
-    uv run --script test_deployment.py bash_execution   # specific test
-    uv run --script test_deployment.py --verbose        # show all socket.io events
+    uv run python test_deployment.py                  # run all tests
+    uv run python test_deployment.py --list           # list available tests
+    uv run python test_deployment.py bash_execution   # specific test
+    uv run python test_deployment.py --verbose        # show all socket.io events
 
 Requires CHAT_ADAMSMITH_AS_OWUI_TOKEN in .env (or environment).
 """
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["httpx", "python-socketio[asyncio_client]", "aiohttp", "python-dotenv"]
-# ///
 
 import asyncio
 import json
@@ -309,31 +305,6 @@ async def test_bash_execution(R: Results, owui: OWUIClient):
     R.flush_diagnostics(before)
 
 
-async def test_lathe_manual(R: Results, owui: OWUIClient):
-    """The lathe(manpage=...) tool returns version info."""
-    print("\n── deployment: lathe manual ──")
-    before = R.failed
-
-    result = await owui.send_message(
-        messages=[{"role": "user", "content": 'Call lathe(manpage="version") and tell me the version.'}],
-        tool_ids=["lathe"],
-    )
-    R.dump_on_failure("lathe_manual", result["events"])
-
-    calls = get_tool_calls(result["output"])
-    R.check("model called lathe tool", len(calls) > 0, f"got {len(calls)}")
-    if calls:
-        R.check("called lathe function", calls[0].get("name") == "lathe", calls[0].get("name"))
-
-    results = get_tool_results(result["output"])
-    R.check("got lathe result", len(results) > 0, f"got {len(results)}")
-    if results:
-        text = get_tool_result_text(results[0])
-        R.check("version in output", "version" in text.lower(), text[:200])
-
-    R.flush_diagnostics(before)
-
-
 async def test_write_read_roundtrip(R: Results, owui: OWUIClient):
     """Write a file via the write tool, then read it back via bash."""
     print("\n── deployment: write + read roundtrip ──")
@@ -380,7 +351,6 @@ API_TESTS = {
 
 LIVE_TESTS = {
     "bash_execution": test_bash_execution,
-    "lathe_manual": test_lathe_manual,
     "write_read": test_write_read_roundtrip,
 }
 

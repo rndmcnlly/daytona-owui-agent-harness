@@ -20,42 +20,39 @@ Deployment credentials live in `.env` (gitignored). It contains:
 - `CHAT_ADAMSMITH_AS_OWUI_TOKEN` — admin JWT for `https://chat.adamsmith.as`, the primary deployment. Used by deployment tests and to install/update the tool via the OWUI admin API.
 - `EMAIL` / `PASS` — login credentials used by the demo video capture script.
 
+Dependencies are managed as a uv virtual project (`pyproject.toml` with no
+build system). `uv run` resolves everything automatically — no manual venv
+activation needed.
+
 To run unit tests (no sandbox needed):
 
 ```
-uv run --script test_unit.py
+uv run python test_unit.py
 ```
 
 To run integration tests (requires `DAYTONA_API_KEY` in `.env`):
 
 ```
-uv run --script test_integration.py
+uv run python test_integration.py
 ```
 
 To run deployment tests against the live OWUI instance (requires `CHAT_ADAMSMITH_AS_OWUI_TOKEN`):
 
 ```
-uv run --script test_deployment.py              # all deployment tests
-uv run --script test_deployment.py --verbose    # show all socket.io events
-```
-
-The dispatcher `test_harness.py` runs unit + integration by default (backwards compat):
-
-```
-uv run --script test_harness.py              # unit + integration
-uv run --script test_harness.py all          # unit + integration + deployment
+uv run python test_deployment.py              # all deployment tests
+uv run python test_deployment.py --verbose    # show all socket.io events
 ```
 
 ## Keep tests in sync with the implementation
 
-`test_harness.py` tests internal helpers directly (imports them by name from `lathe`). When you:
+`test_unit.py` tests internal helpers directly (imports them by name from `lathe`). When you:
 
-- **Remove or rename a module-level name** — search the test harness for it and update accordingly.
-- **Change a function signature** — find all call sites in the test harness and update them.
+- **Remove or rename a module-level name** — search the test files for it and update accordingly.
+- **Change a function signature** — find all call sites in the test files and update them.
 - **Delete a code path** — remove the tests that exercised it; dead tests are misleading.
 - **Add a new helper or behavior** — add corresponding tests.
 
-Run `uv run --script test_harness.py unit` before committing any change to `lathe.py`. All tests must pass.
+Run `uv run python test_unit.py` before committing any change to `lathe.py`. All tests must pass.
 
 ## Closing issues
 

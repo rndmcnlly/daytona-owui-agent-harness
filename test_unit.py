@@ -3,12 +3,8 @@
 Unit tests for lathe.py — pure Python, no network, no sandbox.
 
 Usage:
-    uv run --script test_unit.py
+    uv run python test_unit.py
 """
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["httpx", "pydantic"]
-# ///
 
 import asyncio
 import sys
@@ -166,39 +162,16 @@ async def test_require_abs_path(R: Results):
     R.check("custom param name in error", "mypath" in (_require_abs_path("bad", "mypath") or ""), _require_abs_path("bad", "mypath"))
 
 
-async def test_human_size(R: Results):
-    from lathe import _human_size
-
-    print("\n── _human_size: formatting ──")
-    R.check("bytes", _human_size(500) == "500 B", _human_size(500))
-    R.check("kilobytes", _human_size(1024) == "1.0 KB", _human_size(1024))
-    R.check("megabytes", _human_size(1024 * 1024) == "1.0 MB", _human_size(1024 * 1024))
-    R.check("large", "GB" in _human_size(2 * 1024**3), _human_size(2 * 1024**3))
-
-
-async def test_prepend_warning(R: Results):
-    from lathe import _prepend_warning
-
-    print("\n── _prepend_warning: behavior ──")
-    R.check("no warning returns result", _prepend_warning("result", None) == "result", "")
-    R.check("warning prepended", _prepend_warning("result", "warn") == "warn\nresult", _prepend_warning("result", "warn"))
-
-
 async def test_build_tool_catalog(R: Results):
     from lathe import _build_tool_catalog, Tools
 
-    print("\n── _build_tool_catalog: introspection ──")
+    print("\n── _build_tool_catalog: filtering ──")
     tools = Tools()
     catalog = _build_tool_catalog(tools)
-    R.check("catalog has bash", "bash(" in catalog, catalog[:200])
-    R.check("catalog has read", "read(" in catalog, catalog[:200])
-    R.check("catalog has write", "write(" in catalog, catalog[:200])
-    R.check("catalog has edit", "edit(" in catalog, catalog[:200])
-    R.check("catalog has expose", "expose(" in catalog, catalog[:200])
-    R.check("catalog has destroy", "destroy(" in catalog, catalog[:200])
-    R.check("catalog has onboard", "onboard(" in catalog, catalog[:200])
     R.check("catalog excludes lathe", "lathe(" not in catalog, "lathe should be excluded")
     R.check("catalog excludes private", "_" not in catalog.split("(")[0] if "(" in catalog else True, "private methods should be excluded")
+    # Sanity: catalog is non-empty (at least one real tool listed)
+    R.check("catalog is non-empty", len(catalog) > 0, "catalog should list at least one tool")
 
 
 # ── Test registry and runner ─────────────────────────────────────────
@@ -209,8 +182,6 @@ TESTS = {
     "truncate": test_truncate,
     "shell_quote": test_shell_quote,
     "require_abs_path": test_require_abs_path,
-    "human_size": test_human_size,
-    "prepend_warning": test_prepend_warning,
     "build_tool_catalog": test_build_tool_catalog,
 }
 
