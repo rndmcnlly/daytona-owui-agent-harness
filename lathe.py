@@ -1301,13 +1301,14 @@ class Tools:
             )
             result = logs_resp.text if logs_resp.status_code == 200 else ""
 
-            if finished:
-                # Session served its purpose — clean up to avoid accumulation.
-                await client.delete(
-                    _toolbox(self.valves, sandbox_id, f"/process/session/{session_id}"),
-                    headers=_headers(self.valves),
-                    timeout=10.0,
-                )
+            # NOTE: We intentionally do NOT delete the session here.
+            # Daytona session deletion kills all processes spawned within
+            # it, including children backgrounded with nohup/&. Since
+            # "nohup server & ... expose()" is the primary workflow for
+            # exposing services, deleting the session would silently kill
+            # the server the user just asked for. Sessions are lightweight
+            # and the sandbox itself is reaped on idle, so accumulation
+            # is not a practical concern.
 
             # ── Auto-backgrounded: command still running ────────────
             if not finished:
