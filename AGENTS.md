@@ -14,11 +14,11 @@ When writing or reorganizing documentation, route content to the right home. Imp
 
 ## Credentials and deployment
 
-Deployment credentials live in `.env` (gitignored). It contains:
+Deployment credentials live in `.env` (gitignored). See `.env.example` for the full list. Key variables:
 
 - `DAYTONA_API_KEY` — used by integration tests against the live sandbox API.
-- `CHAT_ADAMSMITH_AS_OWUI_TOKEN` — admin JWT for `https://chat.adamsmith.as`, the primary deployment. Used by deployment tests and to install/update the tool via the OWUI admin API.
-- `EMAIL` / `PASS` — login credentials used by the demo video capture script.
+- `OWUI_URL` / `OWUI_TOKEN` / `OWUI_MODEL` — target OWUI instance for deployment tests. The token is an admin JWT; the model must be a valid model ID on that instance (including connection prefix).
+- `DEMO_OWUI_URL` / `DEMO_EMAIL` / `DEMO_PASS` — login credentials used by the demo video capture script. These are also set as GitHub Actions secrets (`DEMO_OWUI_URL`, `DEMO_EMAIL`, `DEMO_PASS`) for the CI workflow.
 
 Dependencies are managed as a uv virtual project (`pyproject.toml` with no
 build system). `uv run` resolves everything automatically — no manual venv
@@ -36,7 +36,7 @@ To run integration tests (requires `DAYTONA_API_KEY` in `.env`):
 uv run python test_integration.py
 ```
 
-To run deployment tests against the live OWUI instance (requires `CHAT_ADAMSMITH_AS_OWUI_TOKEN`):
+To run deployment tests against the live OWUI instance (requires `OWUI_URL`, `OWUI_TOKEN`, `OWUI_MODEL`):
 
 ```
 uv run python test_deployment.py              # all deployment tests
@@ -59,7 +59,7 @@ Run `uv run python test_unit.py` before committing any change to `lathe.py`. All
 Do not close an issue (via commit message or `gh issue close`) without:
 
 1. **Running the unit tests** and confirming they pass.
-2. **Getting admin feedback from a real deployment** — install the updated `lathe.py` on `https://chat.adamsmith.as` using the admin token from `.env` and verify the behavior works end-to-end — unless the change clearly has no runtime impact (e.g. pure documentation, comment-only edits, test-only changes).
+2. **Getting admin feedback from a real deployment** — install the updated `lathe.py` on the OWUI instance specified by `OWUI_URL` using the admin token from `.env` and verify the behavior works end-to-end — unless the change clearly has no runtime impact (e.g. pure documentation, comment-only edits, test-only changes).
 
 The unit tests catch regressions in pure-Python helpers but cannot catch broken HTTP paths, OWUI integration issues, or indentation bugs that only surface at runtime. Real deployment is the final gate.
 
@@ -95,7 +95,7 @@ Both are embedded on the docs site (`docs/index.html`) via release asset URLs.
 
 **Explainer video** is a Remotion project with TTS narration (requires `DEEPINFRA_TOKEN` secret). Edit `explainer-video/src/data/script.tsx` to change content.
 
-**Demo video** is a headless Playwright script (`demo-video/capture.mjs`) that logs into `chat.adamsmith.as`, enables Lathe, and drives a real multi-turn conversation. Requires `DEMO_EMAIL` and `DEMO_PASS` secrets. The capture is non-deterministic — model responses vary between runs. The script asks the model to use markdown links for exposed URLs so that raw proxy URLs never appear as visible text in the video.
+**Demo video** is a headless Playwright script (`demo-video/capture.mjs`) that logs into an OWUI instance, enables Lathe, and drives a real multi-turn conversation. Requires `DEMO_OWUI_URL`, `DEMO_EMAIL`, and `DEMO_PASS` secrets. The capture is non-deterministic — model responses vary between runs. The script asks the model to use markdown links for exposed URLs so that raw proxy URLs never appear as visible text in the video.
 
 Changes to `lathe.py` can break the demo video if they affect user-visible behavior (e.g. tool output format, expose URL structure, sandbox lifecycle). The demo workflow is a reasonable smoke test for the live deployment but should not block merges — it depends on external services (OWUI, Daytona, model inference) that can fail independently.
 

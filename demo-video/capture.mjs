@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * Playwright video capture of a real Lathe session on chat.adamsmith.as.
+ * Playwright video capture of a real Lathe session on an Open WebUI instance.
  *
  * Captures: login → enable Lathe → clone a repo → ask for VS Code on
  * a random port → model installs code-server + exposes it → open the
  * live IDE URL → return to chat → ask model to stop the server.
  *
  * Usage:  node capture.mjs
- * Env:    EMAIL, PASS (loaded from .env if present)
+ * Env:    DEMO_OWUI_URL, DEMO_EMAIL, DEMO_PASS (loaded from .env if present)
  * Output: capture.webm
  */
 
@@ -29,9 +29,10 @@ try {
   }
 } catch {}
 
-const EMAIL = process.env.EMAIL;
-const PASS = process.env.PASS;
-if (!EMAIL || !PASS) { console.error("Set EMAIL and PASS"); process.exit(1); }
+const OWUI_URL = (process.env.DEMO_OWUI_URL || "").replace(/\/+$/, "");
+const EMAIL = process.env.DEMO_EMAIL;
+const PASS = process.env.DEMO_PASS;
+if (!OWUI_URL || !EMAIL || !PASS) { console.error("Set DEMO_OWUI_URL, DEMO_EMAIL, and DEMO_PASS"); process.exit(1); }
 
 const VIEWPORT = { width: 1280, height: 720 };
 
@@ -319,8 +320,8 @@ let chatUrl = null;
 
 try {
   // ── Login ──────────────────────────────────────────────────────
-  log("login", "Navigating to chat.adamsmith.as...");
-  await page.goto("https://chat.adamsmith.as/auth");
+  log("login", `Navigating to ${OWUI_URL}...`);
+  await page.goto(`${OWUI_URL}/auth`);
   await page.waitForLoadState("networkidle").catch(() => {});
   await page.waitForTimeout(1500);
 
@@ -502,7 +503,7 @@ try {
 
   // ── Beat 8: Return to chat ──────────────────────────────────────
   log("beat8", "Returning to chat...");
-  await page.goto(chatUrl || "https://chat.adamsmith.as/");
+  await page.goto(chatUrl || `${OWUI_URL}/`);
   await page.waitForLoadState("networkidle").catch(() => {});
   await page.waitForTimeout(2000);
   await suppressTooltips(page);

@@ -32,8 +32,9 @@ jobs:
       - name: Run capture
         working-directory: demo-video
         env:
-          EMAIL: ${{ secrets.DEMO_EMAIL }}
-          PASS: ${{ secrets.DEMO_PASS }}
+          DEMO_OWUI_URL: ${{ secrets.DEMO_OWUI_URL }}
+          DEMO_EMAIL: ${{ secrets.DEMO_EMAIL }}
+          DEMO_PASS: ${{ secrets.DEMO_PASS }}
         run: node capture.mjs
 
       - name: Upload to demo-video-latest release
@@ -46,7 +47,7 @@ jobs:
           done
           # Create release if it doesn't exist
           gh release create demo-video-latest --title "Demo Video (latest)" \
-            --notes "Auto-captured Playwright session on chat.adamsmith.as. Updated on every push." \
+            --notes "Auto-captured Playwright demo session. Updated on every push." \
             --latest=false 2>/dev/null || true
           # Upload
           gh release upload demo-video-latest \

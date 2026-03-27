@@ -14,7 +14,7 @@ Usage:
     uv run python test_deployment.py bash_execution   # specific test
     uv run python test_deployment.py --verbose        # show all socket.io events
 
-Requires CHAT_ADAMSMITH_AS_OWUI_TOKEN in .env (or environment).
+Requires OWUI_URL, OWUI_TOKEN, and OWUI_MODEL in .env (or environment).
 """
 
 import asyncio
@@ -30,10 +30,9 @@ import socketio
 
 load_dotenv()
 
-OWUI_BASE = "https://chat.adamsmith.as"
-OWUI_TOKEN = os.environ.get("CHAT_ADAMSMITH_AS_OWUI_TOKEN", "")
-# Cheap, fast model for deployment tests
-MODEL = "anthropic_via_openrouter.anthropic/claude-haiku-4.5"
+OWUI_BASE = os.environ.get("OWUI_URL", "").rstrip("/")
+OWUI_TOKEN = os.environ.get("OWUI_TOKEN", "")
+MODEL = os.environ.get("OWUI_MODEL", "")
 VERBOSE = False
 
 
@@ -377,8 +376,9 @@ async def main():
             print(f"Unknown test: {name}. Use --list to see available tests.")
             sys.exit(1)
 
-    if not OWUI_TOKEN:
-        print("Error: CHAT_ADAMSMITH_AS_OWUI_TOKEN not set. Add it to .env or export it.")
+    missing = [name for name, val in [("OWUI_URL", OWUI_BASE), ("OWUI_TOKEN", OWUI_TOKEN), ("OWUI_MODEL", MODEL)] if not val]
+    if missing:
+        print(f"Error: {', '.join(missing)} not set. Add to .env or export. See .env.example.")
         sys.exit(1)
 
     R = Results()
