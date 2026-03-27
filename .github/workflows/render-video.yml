@@ -1,0 +1,55 @@
+name: Render explainer video
+
+on:
+  push:
+    paths:
+      - 'video/**'
+      - '.github/workflows/render-video.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Install npm deps
+        working-directory: video
+        run: npm ci
+
+      - name: Render TTS audio
+        working-directory: video
+        env:
+          DEEPINFRA_TOKEN: ${{ secrets.DEEPINFRA_TOKEN }}
+        run: |
+          mkdir -p ~/.tokens
+          echo "$DEEPINFRA_TOKEN" > ~/.tokens/deepinfra
+          uv run --script render-tts.py
+
+      - name: Render MP4
+        working-directory: video
+        run: npx remotion render LatheExplainer out/lathe-explainer.mp4 --codec h264
+
+      - name: Upload to video-latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Delete existing asset if present
+          gh release view video-latest --json assets -q '.assets[].name' 2>/dev/null | while read name; do
+            gh release delete-asset video-latest "$name" --yes || true
+          done
+          # Create release if it doesn't exist
+          gh release create video-latest --title "Explainer Video (latest)" \
+            --notes "Auto-rendered from video/ source. Updated on every push to video/." \
+            --latest=false 2>/dev/null || true
+          # Upload
+          gh release upload video-latest video/out/lathe-explainer.mp4 --clobber
