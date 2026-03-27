@@ -10,6 +10,5 @@ explainer-video/src/data/manifest.json
 explainer-video/out/
 .DS_Store
 
-# Capture script artifacts
-capture.webm
-*.webm
+# Demo video — captured output
+demo-video/out/
