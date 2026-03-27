@@ -44,7 +44,7 @@
 
 <!-- ── Demo video ─────────────────────────────────── -->
 <div class="demo-video">
-    <video controls muted playsinline>
+    <video id="explainer-video" controls muted playsinline>
         <source src="https://github.com/rndmcnlly/lathe/releases/download/explainer-video-latest/lathe-explainer.mp4" type="video/mp4">
     </video>
     <p class="demo-caption">
@@ -214,6 +214,24 @@
 </div>
 
 <script>
+// Load WebVTT captions from release asset (blob URL bypasses CORS restrictions on <track>)
+(function() {
+    var video = document.getElementById('explainer-video');
+    if (!video) return;
+    fetch('https://github.com/rndmcnlly/lathe/releases/download/explainer-video-latest/lathe-explainer.vtt')
+        .then(function(r) { return r.ok ? r.text() : Promise.reject(r.status); })
+        .then(function(vtt) {
+            var blob = new Blob([vtt], { type: 'text/vtt' });
+            var track = document.createElement('track');
+            track.kind = 'captions';
+            track.label = 'English';
+            track.srclang = 'en';
+            track.src = URL.createObjectURL(blob);
+            video.appendChild(track);
+        })
+        .catch(function() { /* captions unavailable — degrade silently */ });
+})();
+
 document.getElementById('download-json').addEventListener('click', async function(e) {
     e.preventDefault();
     const btn = this;

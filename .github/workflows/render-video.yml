@@ -54,4 +54,7 @@ jobs:
             --notes "Auto-rendered from explainer-video/ source. Updated on every push." \
             --latest=false 2>/dev/null || true
           # Upload
-          gh release upload explainer-video-latest explainer-video/out/lathe-explainer.mp4 --clobber
+          gh release upload explainer-video-latest \
+            explainer-video/out/lathe-explainer.mp4 \
+            explainer-video/out/lathe-explainer.vtt \
+            --clobber

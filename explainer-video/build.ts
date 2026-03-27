@@ -17,7 +17,8 @@ import { createHash } from "crypto";
 import { join, dirname } from "path";
 import { execSync } from "child_process";
 import { parseBuffer } from "music-metadata";
-import { script, extractNarrations } from "./src/data/script";
+import { script, extractNarrations, extractTimeline } from "./src/data/script";
+import { CANVAS, TIMING } from "./src/design";
 
 // ── Config ────────────────────────────────────────────────────────
 
@@ -164,6 +165,51 @@ async function renderTTS(force: boolean): Promise<Record<string, ManifestEntry>>
   return manifest;
 }
 
+// ── WebVTT generation ─────────────────────────────────────────────
+
+function formatVTTTime(ms: number): string {
+  const totalSec = ms / 1000;
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = Math.floor(totalSec % 60);
+  const frac = Math.round(ms % 1000);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(frac).padStart(3, "0")}`;
+}
+
+function generateVTT(manifest: Record<string, ManifestEntry>): void {
+  const fps = CANVAS.fps;
+  const narrations = extractNarrations(script);
+  const { parts } = extractTimeline(script, manifest, fps);
+  const narrationMap = new Map(narrations.map((n) => [n.id, n.narration]));
+
+  const lines: string[] = ["WEBVTT", ""];
+
+  for (const part of parts) {
+    for (const slide of part.slides) {
+      const text = narrationMap.get(slide.id);
+      if (!text) continue;
+      const entry = manifest[slide.id];
+      if (!entry) continue;
+
+      const leadIn = slide.section && slide.slideIndex > 0
+        ? TIMING.SECTION_LEAD_IN
+        : TIMING.SLIDE_LEAD_IN;
+
+      const startMs = ((slide.globalStart + leadIn) / fps) * 1000;
+      const endMs = startMs + entry.durationMs;
+
+      lines.push(slide.id);
+      lines.push(`${formatVTTTime(startMs)} --> ${formatVTTTime(endMs)}`);
+      lines.push(text);
+      lines.push("");
+    }
+  }
+
+  const vttPath = join(ROOT, "out", "lathe-explainer.vtt");
+  writeFileSync(vttPath, lines.join("\n"));
+  console.log(`  WebVTT: ${vttPath}`);
+}
+
 // ── Main ──────────────────────────────────────────────────────────
 
 async function main() {
@@ -173,7 +219,10 @@ async function main() {
   mkdirSync(AUDIO_DIR, { recursive: true });
   mkdirSync(join(ROOT, "out"), { recursive: true });
 
-  await renderTTS(forceTTS);
+  const manifest = await renderTTS(forceTTS);
+
+  console.log("\n── Generating WebVTT captions ──\n");
+  generateVTT(manifest);
 
   if (ttsOnly) {
     console.log("\n── TTS only, skipping video render ──");
