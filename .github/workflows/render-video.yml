@@ -21,24 +21,18 @@ jobs:
         with:
           node-version: 22
 
-      - uses: astral-sh/setup-uv@v4
-
       - name: Install npm deps
         working-directory: video
         run: npm ci
 
-      - name: Render TTS audio
+      - name: Render TTS audio + MP4
         working-directory: video
         env:
           DEEPINFRA_TOKEN: ${{ secrets.DEEPINFRA_TOKEN }}
         run: |
           mkdir -p ~/.tokens
           echo "$DEEPINFRA_TOKEN" > ~/.tokens/deepinfra
-          uv run --script render-tts.py
-
-      - name: Render MP4
-        working-directory: video
-        run: npx remotion render LatheExplainer out/lathe-explainer.mp4 --codec h264
+          npm run build
 
       - name: Upload to video-latest release
         env:

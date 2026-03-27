@@ -4,16 +4,19 @@
   "private": true,
   "scripts": {
     "start": "npx remotion studio",
-    "build": "npx remotion render LatheExplainer out/lathe-explainer.mp4 --codec h264"
+    "prepare-audio": "npx tsx prepare.ts",
+    "build": "npx tsx prepare.ts && npx remotion render LatheExplainer out/lathe-explainer.mp4 --codec h264"
   },
   "dependencies": {
     "@remotion/cli": "^4.0.0",
     "@remotion/google-fonts": "4.0.438",
     "@remotion/media-utils": "^4.0.0",
     "@remotion/transitions": "^4.0.0",
+    "music-metadata": "^11.12.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "remotion": "^4.0.0"
+    "remotion": "^4.0.0",
+    "tsx": "^4.21.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",

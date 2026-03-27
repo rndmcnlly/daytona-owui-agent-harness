@@ -5,6 +5,7 @@ node_modules/
 # Video pipeline — derived artifacts
 video/public/audio/*.mp3
 video/public/audio/manifest.json
+video/public/audio/.narration-hashes.json
 video/src/data/manifest.json
 video/out/
 .DS_Store
