@@ -1,0 +1,34 @@
+# Security Policy
+
+## Supported versions
+
+Only the latest version of `lathe.py` on the `main` branch is supported. There are no versioned releases of the toolkit itself — deployments pull from `main`.
+
+## Reporting a vulnerability
+
+If you find a security issue in Lathe, please report it privately rather than opening a public issue.
+
+**Email**: adam@adamsmith.as
+
+Include:
+
+- A description of the vulnerability
+- Steps to reproduce it (or a proof of concept)
+- The impact as you understand it
+
+I'll acknowledge receipt within 48 hours and aim to resolve confirmed vulnerabilities within 7 days. If you'd like to be credited in the fix, let me know.
+
+## Scope
+
+Lathe is a toolkit that runs inside an Open WebUI server process and makes API calls to Daytona's sandbox infrastructure. Security-relevant areas include:
+
+- **Sandbox isolation** — each user gets one sandbox, identified by email. Cross-user access would be a critical issue.
+- **Secret handling** — the `env_vars` UserValve injects secrets into shell commands without exposing them to the model. Leakage of these values to the model context or other users would be a critical issue.
+- **API key exposure** — the Daytona API key is an admin Valve. If a model or user could extract it, they'd have control over all sandboxes.
+- **Sandbox escape** — Lathe executes arbitrary commands inside Daytona sandboxes. This is by design. A vulnerability would be if sandbox commands could affect the OWUI host server or other users' sandboxes.
+
+## Out of scope
+
+- **Anything the model does inside its own sandbox** — users grant models shell access by enabling Lathe. The model can `rm -rf /` its own sandbox. This is expected.
+- **Daytona platform vulnerabilities** — report these to [Daytona](https://www.daytona.io/) directly.
+- **Open WebUI vulnerabilities** — report these to [Open WebUI](https://github.com/open-webui/open-webui/security).
