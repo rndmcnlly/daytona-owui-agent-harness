@@ -3,7 +3,7 @@ name: Render explainer video
 on:
   push:
     paths:
-      - 'video/**'
+      - 'explainer-video/**'
       - '.github/workflows/render-video.yml'
   workflow_dispatch:
 
@@ -22,18 +22,18 @@ jobs:
           node-version: 22
 
       - name: Install npm deps
-        working-directory: video
+        working-directory: explainer-video
         run: npm ci
 
       - name: Cache TTS audio
         uses: actions/cache@v4
         with:
-          path: video/public/audio
-          key: tts-${{ hashFiles('video/src/data/script.tsx') }}
+          path: explainer-video/public/audio
+          key: tts-${{ hashFiles('explainer-video/src/data/script.tsx') }}
           restore-keys: tts-
 
       - name: Render TTS audio + MP4
-        working-directory: video
+        working-directory: explainer-video
         env:
           DEEPINFRA_TOKEN: ${{ secrets.DEEPINFRA_TOKEN }}
         run: |
@@ -41,17 +41,17 @@ jobs:
           echo "$DEEPINFRA_TOKEN" > ~/.tokens/deepinfra
           npm run build
 
-      - name: Upload to video-latest release
+      - name: Upload to explainer-video-latest release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Delete existing asset if present
-          gh release view video-latest --json assets -q '.assets[].name' 2>/dev/null | while read name; do
-            gh release delete-asset video-latest "$name" --yes || true
+          gh release view explainer-video-latest --json assets -q '.assets[].name' 2>/dev/null | while read name; do
+            gh release delete-asset explainer-video-latest "$name" --yes || true
           done
           # Create release if it doesn't exist
-          gh release create video-latest --title "Explainer Video (latest)" \
-            --notes "Auto-rendered from video/ source. Updated on every push to video/." \
+          gh release create explainer-video-latest --title "Explainer Video (latest)" \
+            --notes "Auto-rendered from explainer-video/ source. Updated on every push." \
             --latest=false 2>/dev/null || true
           # Upload
-          gh release upload video-latest video/out/lathe-explainer.mp4 --clobber
+          gh release upload explainer-video-latest explainer-video/out/lathe-explainer.mp4 --clobber

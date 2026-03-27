@@ -2,10 +2,14 @@
 __pycache__/
 node_modules/
 
-# Video pipeline — derived artifacts
-video/public/audio/*.mp3
-video/public/audio/manifest.json
-video/public/audio/.narration-hashes.json
-video/src/data/manifest.json
-video/out/
+# Explainer video pipeline — derived artifacts
+explainer-video/public/audio/*.mp3
+explainer-video/public/audio/manifest.json
+explainer-video/public/audio/.narration-hashes.json
+explainer-video/src/data/manifest.json
+explainer-video/out/
 .DS_Store
+
+# Capture script artifacts
+capture.webm
+*.webm
