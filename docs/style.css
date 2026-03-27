@@ -1,36 +1,4 @@
-/* Lathe docs — Catppuccin Mocha palette */
-
-:root {
-    --base: #1e1e2e;
-    --mantle: #181825;
-    --crust: #11111b;
-    --surface0: #313244;
-    --surface1: #45475a;
-    --surface2: #585b70;
-    --overlay0: #6c7086;
-    --overlay1: #7f849c;
-    --overlay2: #9399b2;
-    --subtext0: #a6adc8;
-    --subtext1: #bac2de;
-    --text: #cdd6f4;
-    --lavender: #b4befe;
-    --blue: #89b4fa;
-    --sapphire: #74c7ec;
-    --sky: #89dceb;
-    --teal: #94e2d5;
-    --green: #a6e3a1;
-    --yellow: #f9e2af;
-    --peach: #fab387;
-    --maroon: #eba0ac;
-    --red: #f38ba8;
-    --mauve: #cba6f7;
-    --pink: #f5c2e7;
-    --flamingo: #f2cdcd;
-    --rosewater: #f5e0dc;
-
-    --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-}
+/* Lathe docs — warm dark palette */
 
 * {
     box-sizing: border-box;
@@ -45,12 +13,91 @@ html {
 }
 
 body {
-    color: var(--text);
-    font-family: var(--font-sans);
-    background-color: var(--crust);
+    color: #c4b59a;
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background-color: #0a0908;
     line-height: 1.6;
     min-height: 100vh;
+    overflow-x: hidden;
 }
+
+/* ── Hero ─────────────────────────────────────────── */
+
+#canvas-container {
+    width: 100%;
+    height: 90vh;
+    min-height: 550px;
+    position: relative;
+}
+
+#canvas-container canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.hero-overlay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    z-index: 10;
+    pointer-events: none;
+}
+
+.hero-overlay h1 {
+    font-size: 4.5rem;
+    font-weight: 900;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #d4c4a8;
+    text-shadow: 0 0 80px rgba(10,9,8,0.95), 0 2px 40px rgba(10,9,8,0.9);
+    margin-bottom: 0.3rem;
+}
+
+.hero-overlay p {
+    font-size: 0.9rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #7a6e5a;
+    text-shadow: 0 0 30px rgba(10,9,8,0.95);
+}
+
+.hero-links {
+    pointer-events: auto;
+    display: flex;
+    gap: 1.5rem;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-top: 1.5rem;
+}
+
+.hero-links a {
+    color: #7a6e5a;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: color 0.2s, border-color 0.2s;
+}
+
+.hero-links a:hover {
+    color: #d4c4a8;
+    border-bottom-color: #4a4035;
+}
+
+.hero-links svg {
+    width: 15px;
+    height: 15px;
+    flex-shrink: 0;
+}
+
+/* ── Page container ───────────────────────────────── */
 
 .container {
     max-width: 680px;
@@ -59,184 +106,108 @@ body {
     padding: 0 1.5rem;
 }
 
+/* ── Links ────────────────────────────────────────── */
+
 a {
-    color: var(--blue);
+    color: #c4b59a;
     text-decoration: none;
-    border-bottom: 1px solid transparent;
-    transition: border-color 0.15s;
+    border-bottom: 1px solid #3a3530;
+    transition: color 0.15s, border-color 0.15s;
 }
 
 a:hover {
-    border-bottom-color: var(--blue);
+    color: #d4c4a8;
+    border-bottom-color: #7a6e5a;
 }
+
+/* ── Code ─────────────────────────────────────────── */
 
 code {
-    font-family: var(--font-mono);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     font-size: 0.85em;
-    background: var(--surface0);
-    border: 1px solid var(--surface1);
-    border-radius: 4px;
+    background: #1a1714;
+    border: 1px solid #2a2520;
+    border-radius: 3px;
     padding: 0.1em 0.35em;
-}
-
-/* ── Hero ─────────────────────────────────────────── */
-
-.hero {
-    text-align: center;
-    padding: 4rem 0 2.5rem 0;
-}
-
-.hero-logo {
-    display: block;
-    width: 240px;
-    height: auto;
-    margin: 0 auto 0.75rem auto;
-}
-
-.hero-name {
-    font-size: 3rem;
-    font-weight: 800;
-    letter-spacing: -0.03em;
-    color: var(--text);
-    margin-bottom: 0.25rem;
-}
-
-.hero-tagline {
-    font-size: 1.15rem;
-    color: var(--subtext0);
-    max-width: 480px;
-    margin: 0 auto 1.75rem auto;
-    line-height: 1.5;
-}
-
-.hero-links {
-    display: flex;
-    gap: 1.5rem;
-    justify-content: center;
-    flex-wrap: wrap;
-}
-
-.hero-links a {
-    color: var(--overlay2);
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-size: 0.85rem;
-    border-bottom: none;
-    transition: color 0.15s;
-}
-
-.hero-links a:hover {
-    color: var(--text);
-}
-
-.hero-links svg {
-    width: 16px;
-    height: 16px;
-    flex-shrink: 0;
-}
-
-/* ── Download button ──────────────────────────────── */
-
-.hero-links .download-btn {
-    color: var(--base);
-    background: var(--peach);
-    padding: 0.3rem 0.9rem;
-    border-radius: 999px;
-    font-weight: 600;
-    transition: background 0.15s, color 0.15s;
-}
-
-.hero-links .download-btn:hover {
-    background: var(--yellow);
-    color: var(--base);
-}
-
-.hero-links .download-btn svg {
-    color: var(--base);
-}
-
-/* ── Demo video ───────────────────────────────────── */
-
-.demo-video {
-    margin: 2rem 0;
-}
-
-.demo-video video {
-    width: 100%;
-    border-radius: 8px;
-    border: 1px solid var(--surface0);
-    display: block;
-}
-
-.demo-caption {
-    text-align: center;
-    font-size: 0.8rem;
-    color: var(--overlay1);
-    margin-top: 0.5rem;
-}
-
-.demo-caption a {
-    color: var(--overlay2);
-}
-
-.demo-caption a:hover {
-    color: var(--text);
+    color: #d4c4a8;
 }
 
 /* ── Callout box ──────────────────────────────────── */
 
 .callout {
-    background: var(--mantle);
-    border: 1px solid var(--surface0);
-    border-radius: 8px;
-    padding: 1rem 1.25rem;
-    margin: 2rem 0;
-    font-size: 0.9rem;
-    color: var(--subtext1);
-    line-height: 1.6;
+    border-top: 1px solid #2a2520;
+    padding: 2rem 0;
+    font-size: 1.05rem;
+    color: #a89880;
+    line-height: 1.7;
 }
 
 .callout strong {
-    color: var(--text);
-}
-
-.callout code {
-    font-size: 0.8rem;
+    color: #d4c4a8;
 }
 
 /* ── Sections ─────────────────────────────────────── */
 
 .section {
     padding: 2.5rem 0;
-    border-top: 1px solid var(--surface0);
+    border-top: 1px solid #2a2520;
 }
 
 .section-label {
-    font-size: 0.7rem;
+    font-size: 0.65rem;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--peach);
+    letter-spacing: 0.12em;
+    color: #6a5e4a;
     margin-bottom: 0.5rem;
 }
 
 .section-title {
-    font-size: 1.35rem;
+    font-size: 1.3rem;
     font-weight: 800;
-    color: var(--text);
+    color: #d4c4a8;
     margin-bottom: 1rem;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.01em;
 }
 
 .section p {
-    color: var(--subtext1);
+    color: #9a8e7a;
     margin-bottom: 1rem;
     line-height: 1.65;
 }
 
 .section p:last-child {
     margin-bottom: 0;
+}
+
+/* ── Videos ───────────────────────────────────────── */
+
+.video-block {
+    margin: 1.5rem 0;
+}
+
+.video-block video {
+    width: 100%;
+    border-radius: 3px;
+    border: 1px solid #2a2520;
+    display: block;
+}
+
+.video-caption {
+    text-align: center;
+    font-size: 0.75rem;
+    color: #6a5e4a;
+    margin-top: 0.5rem;
+    letter-spacing: 0.03em;
+}
+
+.video-caption a {
+    color: #7a6e5a;
+    border-bottom-color: transparent;
+}
+
+.video-caption a:hover {
+    color: #c4b59a;
 }
 
 /* ── Tool grid ────────────────────────────────────── */
@@ -249,30 +220,39 @@ code {
 }
 
 .tool-card {
-    background: var(--mantle);
-    border: 1px solid var(--surface0);
-    border-radius: 8px;
+    background: #110f0c;
+    border: 1px solid #2a2520;
+    border-radius: 3px;
     padding: 0.9rem 1rem;
     transition: border-color 0.15s;
 }
 
 .tool-card:hover {
-    border-color: var(--surface1);
+    border-color: #3a3530;
 }
 
 .tool-card h3 {
     font-size: 0.85rem;
     font-weight: 700;
-    color: var(--text);
+    color: #d4c4a8;
     margin-bottom: 0.25rem;
-    font-family: var(--font-mono);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
 .tool-card p {
     font-size: 0.8rem;
-    color: var(--overlay2);
+    color: #7a6e5a;
     margin: 0;
     line-height: 1.45;
+}
+
+.tool-card a {
+    color: #9a8e7a;
+    border-bottom-color: #3a3530;
+}
+
+.tool-card a:hover {
+    color: #c4b59a;
 }
 
 /* ── Recipe list ──────────────────────────────────── */
@@ -285,7 +265,7 @@ code {
 
 .recipe-list li {
     padding: 0.6rem 0;
-    border-bottom: 1px solid var(--surface0);
+    border-bottom: 1px solid #1a1714;
     display: flex;
     align-items: baseline;
     gap: 0.75rem;
@@ -297,62 +277,33 @@ code {
 }
 
 .recipe-label {
-    color: var(--text);
+    color: #c4b59a;
     font-weight: 600;
     white-space: nowrap;
 }
 
 .recipe-desc {
-    color: var(--overlay2);
+    color: #7a6e5a;
 }
 
-/* ── Terminal box (like install-box on pi.dev) ───── */
+/* ── Terminal box ─────────────────────────────────── */
 
 .terminal-box {
-    background: var(--mantle);
-    border: 1px solid var(--surface0);
-    border-radius: 8px;
+    background: #110f0c;
+    border: 1px solid #2a2520;
+    border-radius: 3px;
     padding: 0.75rem 1.25rem;
-    font-family: var(--font-mono);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     font-size: 0.8rem;
-    color: var(--text);
+    color: #c4b59a;
     margin: 1.25rem 0;
     overflow-x: auto;
     white-space: pre;
     line-height: 1.6;
 }
 
-.terminal-box .prompt {
-    color: var(--overlay1);
-    user-select: none;
-}
-
 .terminal-box .comment {
-    color: var(--overlay0);
-}
-
-/* ── Architecture diagram (text) ──────────────────── */
-
-.arch-diagram {
-    background: var(--mantle);
-    border: 1px solid var(--surface0);
-    border-radius: 8px;
-    padding: 1.25rem 1.5rem;
-    font-family: var(--font-mono);
-    font-size: clamp(0.55rem, 1.8vw, 0.75rem);
-    line-height: 1.7;
-    color: var(--subtext0);
-    overflow-x: auto;
-    margin: 1.25rem 0;
-    white-space: pre;
-}
-
-.arch-diagram .highlight {
-    color: var(--peach);
-}
-
-.arch-diagram .dim {
-    color: var(--overlay0);
+    color: #4a4035;
 }
 
 /* ── Footer ───────────────────────────────────────── */
@@ -360,33 +311,34 @@ code {
 .footer {
     text-align: center;
     padding: 2.5rem 0;
-    border-top: 1px solid var(--surface0);
+    border-top: 1px solid #2a2520;
     font-size: 0.8rem;
-    color: var(--overlay1);
+    color: #4a4035;
 }
 
 .footer a {
-    color: var(--overlay2);
+    color: #6a5e4a;
     border-bottom: none;
 }
 
 .footer a:hover {
-    color: var(--text);
+    color: #c4b59a;
 }
 
 /* ── Responsive ───────────────────────────────────── */
 
-@media (max-width: 520px) {
-    .hero-logo {
-        width: 200px;
+@media (max-width: 640px) {
+    #canvas-container {
+        height: 70vh;
+        min-height: 400px;
     }
 
-    .hero-name {
-        font-size: 2.25rem;
+    .hero-overlay h1 {
+        font-size: 2.8rem;
     }
 
-    .hero-tagline {
-        font-size: 1rem;
+    .hero-overlay p {
+        font-size: 0.75rem;
     }
 
     .tool-grid {
@@ -395,5 +347,10 @@ code {
 
     .section-title {
         font-size: 1.15rem;
+    }
+
+    .recipe-list li {
+        flex-direction: column;
+        gap: 0.25rem;
     }
 }
